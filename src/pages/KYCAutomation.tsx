@@ -9,10 +9,11 @@ import ProcessingView from "@/components/kyc/ProcessingView";
 import { ResultsTable } from "@/components/kyc/ResultsTable";
 import { kycQuestions } from "@/data/kycQuestions";
 import type { KYCRow } from "@/data/kycQuestions";
+import { apiUrl } from "@/lib/api";
 
 type WorkflowStep = "upload" | "processing" | "results";
 
-const API_ENDPOINT = "/api/process";
+const API_ENDPOINT = apiUrl("/api/process");
 
 export default function KYCAutomation() {
   const navigate = useNavigate();

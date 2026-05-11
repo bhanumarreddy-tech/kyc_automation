@@ -1,0 +1,18 @@
+{
+  // Cloudflare Workers config — deploys the Vite SPA in `dist/` as static
+  // assets. The Python FastAPI backend lives elsewhere (it cannot run on
+  // Workers); the frontend talks to it via `VITE_API_BASE_URL` set at
+  // build time.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kyc-automation",
+  "compatibility_date": "2026-05-01",
+  "assets": {
+    // SPA fallback so deep links like /kyc-automation route through React
+    // Router instead of 404ing.
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

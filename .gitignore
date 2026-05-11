@@ -32,3 +32,9 @@ backend/.env
 # Local env files (frontend doesn't use one, but keep it out of git just in case)
 .env
 .env.local
+
+# Bun lockfile — repo uses npm (package-lock.json) for Cloudflare builds.
+# Ignore any local bun.lockb / bun.lock so accidentally running `bun
+# install` doesn't re-commit a competing lockfile.
+bun.lockb
+bun.lock

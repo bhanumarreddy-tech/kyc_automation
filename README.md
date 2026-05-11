@@ -64,6 +64,30 @@ This project is built with:
 
 Simply open [Lovable](https://lovable.dev/projects/8453216d-da85-44c2-a13b-70a4e59a0c31) and click on Share -> Publish.
 
+### Deploying the frontend to Cloudflare Workers
+
+The repo includes a `wrangler.jsonc` that publishes the built SPA in `dist/`
+via Workers Static Assets.
+
+1. Host the FastAPI backend (in `backend/`) somewhere that runs Python —
+   Render, Railway, Fly.io, Cloud Run, etc. FastAPI **cannot** run on
+   Cloudflare Workers (no native Python deps like `pillow`/`pypdf`).
+2. On the backend, set `CORS_ORIGINS` to include your Workers domain,
+   e.g. `https://kyc-automation.<account>.workers.dev`.
+3. Edit `src/lib/api.ts` and replace the `PROD_BACKEND_URL` constant
+   with the deployed backend origin (no trailing slash). The URL is
+   hardcoded in source on purpose — no Cloudflare env var needed.
+4. Use these commands in the Cloudflare "Create a Worker" form:
+   - **Build command:** `npm run build`
+   - **Deploy command:** `npx wrangler deploy`
+
+   (We use npm + `package-lock.json` for Cloudflare. `bun.lockb` was
+   removed because Cloudflare's Bun 1.2.x cannot read the old binary
+   lockfile format under `--frozen-lockfile`.)
+
+Local dev keeps using Vite's `/api` proxy to `http://localhost:8000`
+automatically; the hardcoded URL is only used in production builds.
+
 ## Can I connect a custom domain to my Lovable project?
 
 Yes, you can!
