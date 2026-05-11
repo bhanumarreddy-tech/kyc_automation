@@ -1,0 +1,133 @@
+"""End-to-end orchestration for a single ``/api/process`` request.
+
+For each of the 8 sections we make:
+
+1. one *answer* Claude call (with the ``web_search_20250305`` tool), and
+2. one *validation* Claude call (with the user's documents attached).
+
+The 8 answer calls run concurrently via :func:`asyncio.gather`. The 8
+validation calls then run concurrently as well. Results are merged into
+exactly 64 :class:`~app.schemas.KYCRow` instances ready to be returned
+to the frontend.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from app.config import get_settings
+from app.questions import KYC_QUESTIONS, group_by_section
+from app.schemas import KYCRow, SourceLink, ValidationSource
+from app.services.answer_section import AnsweredQuestion, answer_section
+from app.services.documents import parse_documents
+from app.services.validate_section import ValidationResult, validate_section
+
+logger = logging.getLogger(__name__)
+
+
+async def run_pipeline(
+    company: str,
+    uploads: list[tuple[str, bytes, str]],
+) -> list[KYCRow]:
+    """Run the full KYC pipeline and return the populated questionnaire rows."""
+
+    settings = get_settings()
+    sections = group_by_section()
+
+    parsed_docs = await parse_documents(uploads)
+    logger.info("Parsed %d uploaded document(s)", len(parsed_docs))
+
+    # Throttle concurrency so we stay under the Anthropic per-minute input-token
+    # rate limit (e.g. 30k tokens/min on the starter tier). Both phases use
+    # independent semaphores configured via env (ANSWER_CONCURRENCY,
+    # VALIDATION_CONCURRENCY).
+    answer_sem = asyncio.Semaphore(settings.answer_concurrency)
+    validation_sem = asyncio.Semaphore(settings.validation_concurrency)
+    logger.info(
+        "Running pipeline with answer_concurrency=%d, validation_concurrency=%d, "
+        "validation_attach_documents=%s",
+        settings.answer_concurrency,
+        settings.validation_concurrency,
+        settings.validation_attach_documents,
+    )
+
+    async def _bounded_answer(section_no: int, section_name: str, questions: list) -> list[AnsweredQuestion]:
+        async with answer_sem:
+            return await answer_section(company, section_no, section_name, questions)
+
+    async def _bounded_validate(
+        section_no: int,
+        section_name: str,
+        questions: list,
+        answers: list[AnsweredQuestion],
+    ) -> list[ValidationResult]:
+        async with validation_sem:
+            return await validate_section(
+                company, section_no, section_name, questions, answers, parsed_docs
+            )
+
+    answer_tasks = [
+        _bounded_answer(section_no, section_name, questions)
+        for section_no, section_name, questions in sections
+    ]
+    answers_per_section: list[list[AnsweredQuestion]] = await asyncio.gather(
+        *answer_tasks, return_exceptions=False
+    )
+
+    validation_tasks = [
+        _bounded_validate(
+            section_no,
+            section_name,
+            questions,
+            answers_per_section[idx],
+        )
+        for idx, (section_no, section_name, questions) in enumerate(sections)
+    ]
+    validations_per_section: list[list[ValidationResult]] = await asyncio.gather(
+        *validation_tasks, return_exceptions=False
+    )
+
+    answers_by_serial: dict[int, AnsweredQuestion] = {}
+    validations_by_serial: dict[int, ValidationResult] = {}
+
+    for section_answers in answers_per_section:
+        for item in section_answers:
+            answers_by_serial[item.serial_no] = item
+    for section_validations in validations_per_section:
+        for item in section_validations:
+            validations_by_serial[item.serial_no] = item
+
+    rows: list[KYCRow] = []
+    for q in KYC_QUESTIONS:
+        answer = answers_by_serial.get(q.serial_no)
+        validation = validations_by_serial.get(q.serial_no)
+
+        sources = [
+            SourceLink(title=src.get("title") or src.get("url") or "", url=src.get("url") or "")
+            for src in (answer.sources if answer else [])
+        ]
+        validation_sources = [
+            ValidationSource(
+                document=src.get("document") or "",
+                page=src.get("page"),
+                excerpt=src.get("excerpt"),
+            )
+            for src in (validation.validation_sources if validation else [])
+        ]
+
+        rows.append(
+            KYCRow(
+                sectionNo=q.section_no,
+                sectionName=q.section_name,
+                serialNo=q.serial_no,
+                question=q.question,
+                answer=(answer.answer if answer else ""),
+                sources=sources,
+                validation=(validation.validation if validation else ""),  # type: ignore[arg-type]
+                validationSources=validation_sources,
+                analystComments="",
+            )
+        )
+
+    return rows
