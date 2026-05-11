@@ -64,6 +64,8 @@ This project is built with:
 
 Simply open [Lovable](https://lovable.dev/projects/8453216d-da85-44c2-a13b-70a4e59a0c31) and click on Share -> Publish.
 
+<!-- Deploy trigger: harmless comment to kick off a Cloudflare Workers build. -->
+
 ### Deploying the frontend to Cloudflare Workers
 
 The repo includes a `wrangler.jsonc` that publishes the built SPA in `dist/`
