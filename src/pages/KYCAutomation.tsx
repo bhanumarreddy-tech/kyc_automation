@@ -23,11 +23,35 @@ import { apiUrl } from "@/lib/api";
 type WorkflowStep = "upload" | "processing" | "results";
 type MainTab = "run" | "history";
 
+interface AttachedDocumentItem {
+  filename: string;
+  sizeBytes?: number | null;
+  contentType?: string;
+}
+
 interface HistoryListItem {
   submissionId: string;
   companyName: string;
   createdAt: string;
   documentCount: number;
+  attachedDocuments?: AttachedDocumentItem[];
+  durationMs?: number | null;
+}
+
+function formatDurationMs(ms: number | null | undefined): string {
+  if (ms == null || Number.isNaN(ms) || ms < 0) {
+    return "—";
+  }
+  if (ms < 1000) {
+    return `${ms} ms`;
+  }
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) {
+    return `${seconds}s`;
+  }
+  return `${minutes}m ${seconds}s`;
 }
 
 const API_ENDPOINT = apiUrl("/api/process");
@@ -47,6 +71,10 @@ export default function KYCAutomation() {
   const [historyListLoading, setHistoryListLoading] = useState(false);
   const [historyListError, setHistoryListError] = useState<string | null>(null);
   const [historyDetailLoading, setHistoryDetailLoading] = useState(false);
+  const [historyRunMeta, setHistoryRunMeta] = useState<{
+    attachedDocuments: AttachedDocumentItem[];
+    durationMs: number | null;
+  } | null>(null);
 
   useEffect(() => {
     const preventDefaults = (e: DragEvent) => {
@@ -154,6 +182,7 @@ export default function KYCAutomation() {
 
   const closeHistoryDetail = () => {
     setHistoryDetailId(null);
+    setHistoryRunMeta(null);
     setRows([]);
     setCompanyName("");
   };
@@ -178,12 +207,20 @@ export default function KYCAutomation() {
       const data = (await res.json()) as {
         companyName: string;
         rows: KYCRow[];
+        attachedDocuments?: AttachedDocumentItem[];
+        durationMs?: number | null;
       };
       if (!data?.rows || !Array.isArray(data.rows)) {
         throw new Error("Invalid submission payload");
       }
       setCompanyName(data.companyName);
       setRows(data.rows);
+      setHistoryRunMeta({
+        attachedDocuments: Array.isArray(data.attachedDocuments)
+          ? data.attachedDocuments
+          : [],
+        durationMs: data.durationMs ?? null,
+      });
       setHistoryDetailId(submissionId);
     } catch (e) {
       console.error(e);
@@ -242,6 +279,7 @@ export default function KYCAutomation() {
       const data = (await res.json()) as {
         rows: KYCRow[];
         submissionId?: string;
+        durationMs?: number | null;
       };
       if (!data?.rows || !Array.isArray(data.rows)) {
         throw new Error("Backend returned an invalid response");
@@ -250,11 +288,16 @@ export default function KYCAutomation() {
       setRows(data.rows);
       setStep("results");
 
+      const durationLabel =
+        typeof data.durationMs === "number" && !Number.isNaN(data.durationMs)
+          ? ` Run time ${formatDurationMs(data.durationMs)}.`
+          : "";
+
       toast({
         title: "Processing complete",
         description: data.submissionId
-          ? `KYC questionnaire populated for ${companyName.trim()}. Saved to history.`
-          : `KYC questionnaire populated for ${companyName.trim()}.`,
+          ? `KYC questionnaire populated for ${companyName.trim()}. Saved to history.${durationLabel}`
+          : `KYC questionnaire populated for ${companyName.trim()}.${durationLabel}`,
       });
     } catch (error) {
       console.error("Processing error:", error);
@@ -452,6 +495,46 @@ export default function KYCAutomation() {
                     Back to list
                   </Button>
                 </div>
+
+                {historyRunMeta && (
+                  <div className="rounded-md border bg-muted/30 p-4 text-sm space-y-3">
+                    <div className="flex flex-wrap gap-x-6 gap-y-1">
+                      <div>
+                        <span className="text-muted-foreground">Run duration</span>
+                        {": "}
+                        <span className="font-medium">
+                          {formatDurationMs(historyRunMeta.durationMs)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-muted-foreground text-xs uppercase tracking-wide">
+                        Attached documents
+                      </div>
+                      {historyRunMeta.attachedDocuments.length === 0 ? (
+                        <p className="text-muted-foreground">No documents were uploaded.</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {historyRunMeta.attachedDocuments.map((doc, idx) => (
+                            <li
+                              key={`${doc.filename}-${idx}`}
+                              className="flex flex-wrap items-center gap-2 p-2 bg-background rounded-md border"
+                            >
+                              <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                              <span className="flex-1 min-w-0 truncate">{doc.filename}</span>
+                              {typeof doc.sizeBytes === "number" && doc.sizeBytes >= 0 && (
+                                <span className="text-xs text-muted-foreground whitespace-nowrap">
+                                  {(doc.sizeBytes / 1024 / 1024).toFixed(2)} MB
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 <ResultsTable
                   companyName={companyName}
                   rows={rows}
@@ -484,35 +567,61 @@ export default function KYCAutomation() {
                       <TableHeader>
                         <TableRow>
                           <TableHead>Client</TableHead>
-                          <TableHead className="hidden sm:table-cell">Documents</TableHead>
-                          <TableHead>Saved</TableHead>
+                          <TableHead className="min-w-[140px] max-w-[260px]">Documents</TableHead>
+                          <TableHead className="whitespace-nowrap hidden md:table-cell">
+                            Duration
+                          </TableHead>
+                          <TableHead className="whitespace-nowrap">Saved</TableHead>
                           <TableHead className="text-right">Open</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {historyItems.map((item) => (
-                          <TableRow key={item.submissionId}>
-                            <TableCell className="font-medium max-w-[200px] truncate sm:max-w-md">
-                              {item.companyName}
-                            </TableCell>
-                            <TableCell className="hidden sm:table-cell text-muted-foreground">
-                              {item.documentCount}
-                            </TableCell>
-                            <TableCell className="text-muted-foreground whitespace-nowrap">
-                              {new Date(item.createdAt).toLocaleString()}
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="secondary"
-                                onClick={() => void openHistorySubmission(item.submissionId)}
-                              >
-                                Open
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        ))}
+                        {historyItems.map((item) => {
+                          const docs = item.attachedDocuments ?? [];
+                          const docSummary =
+                            docs.length === 0
+                              ? "None"
+                              : docs.map((d) => d.filename).join(", ");
+                          return (
+                            <TableRow key={item.submissionId}>
+                              <TableCell className="font-medium max-w-[180px]">
+                                <div className="truncate" title={item.companyName}>
+                                  {item.companyName}
+                                </div>
+                                <div className="md:hidden text-xs text-muted-foreground mt-1">
+                                  {formatDurationMs(item.durationMs)}
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-muted-foreground max-w-[220px] lg:max-w-[320px]">
+                                <span className="block truncate text-foreground/90" title={docSummary}>
+                                  {docs.length === 0 ? (
+                                    <span className="text-muted-foreground">None</span>
+                                  ) : (
+                                    docSummary
+                                  )}
+                                </span>
+                              </TableCell>
+                              <TableCell className="hidden md:table-cell text-muted-foreground whitespace-nowrap">
+                                {formatDurationMs(item.durationMs)}
+                              </TableCell>
+                              <TableCell className="text-muted-foreground whitespace-nowrap">
+                                {new Date(item.createdAt).toLocaleString()}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() =>
+                                    void openHistorySubmission(item.submissionId)
+                                  }
+                                >
+                                  Open
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
                       </TableBody>
                     </Table>
                   </div>

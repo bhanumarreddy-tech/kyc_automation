@@ -46,12 +46,34 @@ class KYCRow(BaseModel):
     analyst_comments: str = Field(default="", alias="analystComments")
 
 
+class AttachedDocument(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    filename: str
+    size_bytes: int | None = Field(default=None, alias="sizeBytes")
+    content_type: str = Field(default="", alias="contentType")
+
+
 class ProcessResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     rows: list[KYCRow]
     submission_id: str | None = Field(default=None, alias="submissionId")
     saved_at: datetime | None = Field(default=None, alias="savedAt")
+    duration_ms: int | None = Field(default=None, alias="durationMs")
+
+
+def attached_documents_from_stored(raw: list | None) -> list[AttachedDocument]:
+    """Accept legacy JSONB values: list[str] or list[object]."""
+    if not raw:
+        return []
+    out: list[AttachedDocument] = []
+    for item in raw:
+        if isinstance(item, str):
+            out.append(AttachedDocument(filename=item))
+        elif isinstance(item, dict):
+            out.append(AttachedDocument.model_validate(item))
+    return out
 
 
 class HistoryListItem(BaseModel):
@@ -61,6 +83,11 @@ class HistoryListItem(BaseModel):
     company_name: str = Field(alias="companyName")
     created_at: datetime = Field(alias="createdAt")
     document_count: int = Field(default=0, alias="documentCount")
+    attached_documents: list[AttachedDocument] = Field(
+        default_factory=list,
+        alias="attachedDocuments",
+    )
+    duration_ms: int | None = Field(default=None, alias="durationMs")
 
 
 class HistoryDetailResponse(BaseModel):
@@ -69,8 +96,9 @@ class HistoryDetailResponse(BaseModel):
     submission_id: str = Field(alias="submissionId")
     company_name: str = Field(alias="companyName")
     created_at: datetime = Field(alias="createdAt")
-    document_filenames: list[str] = Field(
+    attached_documents: list[AttachedDocument] = Field(
         default_factory=list,
-        alias="documentFilenames",
+        alias="attachedDocuments",
     )
+    duration_ms: int | None = Field(default=None, alias="durationMs")
     rows: list[KYCRow]

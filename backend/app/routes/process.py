@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -10,7 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from app.config import get_settings
 from app.db.session import db_session_maker
 from app.db.submissions import create_kyc_submission
-from app.schemas import ProcessResponse
+from app.schemas import AttachedDocument, ProcessResponse
 from app.services.pipeline import run_pipeline
 
 logger = logging.getLogger(__name__)
@@ -48,19 +49,26 @@ async def process_kyc(
         total_payload / (1024 * 1024),
     )
 
+    pipeline_started = time.perf_counter()
     rows = await run_pipeline(company, uploads)
+    duration_ms = int((time.perf_counter() - pipeline_started) * 1000)
+
+    attached_documents = [
+        AttachedDocument(filename=fn, size_bytes=len(raw), content_type=ctype)
+        for fn, raw, ctype in uploads
+    ]
 
     submission_id_out: str | None = None
     saved_at_out: datetime | None = None
     maker = db_session_maker()
     if maker is not None:
-        doc_names = [fn for fn, _, _ in uploads]
         async with maker() as db_session:
             record = await create_kyc_submission(
                 db_session,
                 company_name=company,
                 rows=rows,
-                document_filenames=doc_names,
+                attached_documents=attached_documents,
+                duration_ms=duration_ms,
             )
             await db_session.commit()
             submission_id_out = str(record.id)
@@ -70,4 +78,5 @@ async def process_kyc(
         rows=rows,
         submission_id=submission_id_out,
         saved_at=saved_at_out,
+        duration_ms=duration_ms,
     )

@@ -8,7 +8,12 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.db.session import db_session_maker
 from app.db.submissions import get_kyc_submission, list_kyc_submissions
-from app.schemas import HistoryDetailResponse, HistoryListItem, KYCRow
+from app.schemas import (
+    HistoryDetailResponse,
+    HistoryListItem,
+    KYCRow,
+    attached_documents_from_stored,
+)
 
 router = APIRouter(prefix="/api", tags=["history"])
 
@@ -31,6 +36,8 @@ async def list_history(
             company_name=r.company_name,
             created_at=r.created_at,
             document_count=len(r.document_filenames or []),
+            attached_documents=attached_documents_from_stored(r.document_filenames),
+            duration_ms=r.duration_ms,
         )
         for r in records
     ]
@@ -62,6 +69,7 @@ async def get_history_detail(submission_id: str) -> HistoryDetailResponse:
         submission_id=str(record.id),
         company_name=record.company_name,
         created_at=record.created_at,
-        document_filenames=list(record.document_filenames or []),
+        attached_documents=attached_documents_from_stored(record.document_filenames),
+        duration_ms=record.duration_ms,
         rows=rows,
     )

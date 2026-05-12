@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, func
+from sqlalchemy import BigInteger, DateTime, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -31,4 +31,6 @@ class KYCSubmission(Base):
         nullable=False,
     )
     rows: Mapped[list] = mapped_column(JSONB, nullable=False)
+    # Legacy: list[str]. Current: list[{"filename", "sizeBytes", "contentType"}].
     document_filenames: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

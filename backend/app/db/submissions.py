@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import KYCSubmission
-from app.schemas import KYCRow
+from app.schemas import AttachedDocument, KYCRow
 
 
 async def create_kyc_submission(
@@ -16,14 +16,20 @@ async def create_kyc_submission(
     *,
     company_name: str,
     rows: list[KYCRow],
-    document_filenames: list[str],
+    attached_documents: list[AttachedDocument],
+    duration_ms: int,
 ) -> KYCSubmission:
     payload = [r.model_dump(mode="json", by_alias=True) for r in rows]
-    doc_meta = document_filenames if document_filenames else None
+    doc_meta = (
+        [d.model_dump(mode="json", by_alias=True) for d in attached_documents]
+        if attached_documents
+        else None
+    )
     record = KYCSubmission(
         company_name=company_name,
         rows=payload,
         document_filenames=doc_meta,
+        duration_ms=duration_ms,
     )
     session.add(record)
     await session.flush()
