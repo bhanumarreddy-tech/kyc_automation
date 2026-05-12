@@ -18,6 +18,8 @@ export interface ValidationSource {
 
 export type ValidationStatus = "Yes" | "No" | "";
 
+export type KycAgentReconValue = "Yes" | "No" | "NA" | "";
+
 export interface KYCRow {
   sectionNo: number;
   sectionName: string;
@@ -28,6 +30,18 @@ export interface KYCRow {
   validation: ValidationStatus;
   validationSources: ValidationSource[];
   analystComments: string;
+  kycAgentRecon: KycAgentReconValue | "";
+}
+
+/** Canonicalize rows from API (field may arrive as ``KYC_Agent_Recon``). */
+export function hydrateKycRows(rows: unknown[]): KYCRow[] {
+  return rows.map((raw) => {
+    const row = raw as KYCRow & { KYC_Agent_Recon?: string };
+    const rawRecon = row.kycAgentRecon ?? row.KYC_Agent_Recon;
+    const kycAgentRecon: KycAgentReconValue | "" =
+      rawRecon === "Yes" || rawRecon === "No" || rawRecon === "NA" ? rawRecon : "";
+    return { ...row, kycAgentRecon };
+  });
 }
 
 export const kycQuestions: KYCQuestion[] = [

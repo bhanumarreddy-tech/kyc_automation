@@ -28,6 +28,7 @@ class ValidationSource(BaseModel):
 
 
 ValidationStatus = Literal["Yes", "No", ""]
+KycAgentReconStatus = Literal["Yes", "No", "NA", ""]
 
 
 class KYCRow(BaseModel):
@@ -44,6 +45,10 @@ class KYCRow(BaseModel):
         default_factory=list, alias="validationSources"
     )
     analyst_comments: str = Field(default="", alias="analystComments")
+    kyc_agent_recon: KycAgentReconStatus = Field(
+        default="",
+        alias="KYC_Agent_Recon",
+    )
 
 
 class AttachedDocument(BaseModel):

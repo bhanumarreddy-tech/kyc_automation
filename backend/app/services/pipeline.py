@@ -137,6 +137,7 @@ async def run_pipeline(
                 validation=(validation.validation if validation else ""),  # type: ignore[arg-type]
                 validationSources=validation_sources,
                 analystComments="",
+                kyc_agent_recon="",
             )
         )
 

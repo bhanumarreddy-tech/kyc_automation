@@ -16,7 +16,7 @@ import { Upload, FileText, Home, X, ArrowLeft, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import ProcessingView from "@/components/kyc/ProcessingView";
 import { ResultsTable } from "@/components/kyc/ResultsTable";
-import { kycQuestions } from "@/data/kycQuestions";
+import { kycQuestions, hydrateKycRows } from "@/data/kycQuestions";
 import type { KYCRow } from "@/data/kycQuestions";
 import { apiUrl } from "@/lib/api";
 
@@ -243,7 +243,7 @@ export default function KYCAutomation() {
         throw new Error("Invalid submission payload");
       }
       setCompanyName(data.companyName);
-      setRows(data.rows);
+      setRows(hydrateKycRows(data.rows));
       setHistoryRunMeta({
         attachedDocuments: Array.isArray(data.attachedDocuments)
           ? data.attachedDocuments
@@ -274,6 +274,7 @@ export default function KYCAutomation() {
       validation: "",
       validationSources: [],
       analystComments: "",
+      kycAgentRecon: "",
     }));
 
   const handleStartProcessing = async () => {
@@ -316,7 +317,7 @@ export default function KYCAutomation() {
         throw new Error("Backend returned an invalid response");
       }
 
-      setRows(data.rows);
+      setRows(hydrateKycRows(data.rows));
       setStep("results");
 
       if (

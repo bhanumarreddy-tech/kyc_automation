@@ -1,7 +1,15 @@
-import { useMemo, useState } from "react";
+import {
+  useMemo,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -17,9 +25,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Check, ExternalLink, Pencil, RotateCcw, X } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Check,
+  ExternalLink,
+  Filter,
+  Pencil,
+  RotateCcw,
+  X,
+} from "lucide-react";
 import type {
   KYCRow,
+  KycAgentReconValue,
   SourceLink,
   ValidationSource,
   ValidationStatus,
@@ -27,7 +47,72 @@ import type {
 import { ExportOptions } from "@/components/kyc/ExportOptions";
 import { KYCStatsBar } from "@/components/kyc/KYCStatsBar";
 
-type EditingField = "answer" | "sources" | "validationSources" | "analystComments";
+type EditingField = "answer" | "sources" | "analystComments";
+
+export type SortColumnId =
+  | "sectionNo"
+  | "serialNo"
+  | "question"
+  | "answer"
+  | "sources"
+  | "validation"
+  | "validationSources"
+  | "kycAgentRecon"
+  | "analystComments";
+
+export type AiValidationFilter = "any" | "yes" | "no" | "empty";
+
+export type KycReconColumnFilter = "any" | "yes" | "no" | "na" | "empty";
+
+const SORT_COLUMN_LABELS: Record<SortColumnId, string> = {
+  sectionNo: "Section No.",
+  serialNo: "Question No.",
+  question: "Question",
+  answer: "Answers",
+  sources: "Sources",
+  validation: "AI Validation",
+  validationSources: "AI Validation Sources",
+  kycAgentRecon: "KYC_Agent_Recon",
+  analystComments: "Analyst Comments",
+};
+
+export interface TableFiltersState {
+  sectionNo: string;
+  serialNo: string;
+  question: string;
+  answer: string;
+  sources: string;
+  aiValidation: AiValidationFilter;
+  aiValidationSources: string;
+  kycAgentRecon: KycReconColumnFilter;
+  analyst: string;
+}
+
+const INITIAL_FILTERS: TableFiltersState = {
+  sectionNo: "",
+  serialNo: "",
+  question: "",
+  answer: "",
+  sources: "",
+  aiValidation: "any",
+  aiValidationSources: "",
+  kycAgentRecon: "any",
+  analyst: "",
+};
+
+function filtersAreActive(f: TableFiltersState): boolean {
+  return (
+    f.sectionNo.trim() !== "" ||
+    f.serialNo.trim() !== "" ||
+    f.question.trim() !== "" ||
+    f.answer.trim() !== "" ||
+    f.sources.trim() !== "" ||
+    f.aiValidation !== "any" ||
+    f.aiValidationSources.trim() !== "" ||
+    f.kycAgentRecon !== "any" ||
+    f.analyst.trim() !== ""
+  );
+}
 
 interface ResultsTableProps {
   companyName: string;
@@ -65,28 +150,218 @@ const validationSourcesToText = (sources: ValidationSource[]): string =>
     })
     .join("\n");
 
-const textToValidationSources = (text: string): ValidationSource[] => {
-  return text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
-      const doc = parts[0] ?? line;
-      let page: number | undefined;
-      let excerpt: string | undefined;
-      for (let i = 1; i < parts.length; i++) {
-        const part = parts[i];
-        const pageMatch = part.match(/^p\.?\s*(\d+)$/i);
-        if (pageMatch) {
-          page = parseInt(pageMatch[1], 10);
-        } else {
-          excerpt = excerpt ? `${excerpt} | ${part}` : part;
-        }
-      }
-      return { document: doc, page, excerpt };
-    });
-};
+function rowPassesFilters(row: KYCRow, f: TableFiltersState): boolean {
+  const sec = f.sectionNo.trim();
+  if (sec) {
+    const n = parseInt(sec, 10);
+    if (Number.isNaN(n)) return false;
+    if (row.sectionNo !== n) return false;
+  }
+  const sn = f.serialNo.trim();
+  if (sn) {
+    const n = parseInt(sn, 10);
+    if (Number.isNaN(n)) return false;
+    if (row.serialNo !== n) return false;
+  }
+  if (f.question.trim()) {
+    if (!row.question.toLowerCase().includes(f.question.trim().toLowerCase())) return false;
+  }
+  if (f.answer.trim()) {
+    if (!row.answer.toLowerCase().includes(f.answer.trim().toLowerCase())) return false;
+  }
+  if (f.sources.trim()) {
+    if (!sourcesToText(row.sources).toLowerCase().includes(f.sources.trim().toLowerCase()))
+      return false;
+  }
+  if (f.aiValidation !== "any") {
+    const v = row.validation;
+    if (f.aiValidation === "yes" && v !== "Yes") return false;
+    if (f.aiValidation === "no" && v !== "No") return false;
+    if (f.aiValidation === "empty" && v !== "") return false;
+  }
+  if (f.aiValidationSources.trim()) {
+    const blob = validationSourcesToText(row.validationSources).toLowerCase();
+    if (!blob.includes(f.aiValidationSources.trim().toLowerCase())) return false;
+  }
+  if (f.kycAgentRecon !== "any") {
+    const k = row.kycAgentRecon;
+    if (f.kycAgentRecon === "yes" && k !== "Yes") return false;
+    if (f.kycAgentRecon === "no" && k !== "No") return false;
+    if (f.kycAgentRecon === "na" && k !== "NA") return false;
+    if (f.kycAgentRecon === "empty" && k !== "") return false;
+  }
+  if (f.analyst.trim()) {
+    if (!row.analystComments.toLowerCase().includes(f.analyst.trim().toLowerCase()))
+      return false;
+  }
+  return true;
+}
+
+function validationRank(v: ValidationStatus): number {
+  if (v === "") return 0;
+  if (v === "No") return 1;
+  return 2;
+}
+
+function reconRank(v: KycAgentReconValue | ""): number {
+  if (v === "") return 0;
+  if (v === "Yes") return 1;
+  if (v === "No") return 2;
+  return 3;
+}
+
+/** Primary comparison; callers add secondary tie-break via serialNo. */
+function cmpByColumn(column: SortColumnId, a: KYCRow, b: KYCRow): number {
+  switch (column) {
+    case "sectionNo":
+      return a.sectionNo !== b.sectionNo
+        ? a.sectionNo - b.sectionNo
+        : a.serialNo - b.serialNo;
+    case "serialNo":
+      return a.serialNo - b.serialNo;
+    case "question":
+      return a.question.localeCompare(b.question, undefined, { sensitivity: "base" });
+    case "answer":
+      return a.answer.localeCompare(b.answer, undefined, { sensitivity: "base" });
+    case "sources":
+      return sourcesToText(a.sources).localeCompare(sourcesToText(b.sources), undefined, {
+        sensitivity: "base",
+      });
+    case "validation":
+      return validationRank(a.validation) - validationRank(b.validation);
+    case "validationSources":
+      return validationSourcesToText(a.validationSources).localeCompare(
+        validationSourcesToText(b.validationSources),
+        undefined,
+        { sensitivity: "base" }
+      );
+    case "kycAgentRecon":
+      return reconRank(a.kycAgentRecon) - reconRank(b.kycAgentRecon);
+    case "analystComments":
+      return a.analystComments.localeCompare(b.analystComments, undefined, {
+        sensitivity: "base",
+      });
+    default:
+      return 0;
+  }
+}
+
+function regroupConsecutive(sorted: KYCRow[]): { sectionNo: number; sectionName: string; rows: KYCRow[] }[] {
+  const out: { sectionNo: number; sectionName: string; rows: KYCRow[] }[] = [];
+  for (const row of sorted) {
+    const tail = out[out.length - 1];
+    if (tail && tail.sectionNo === row.sectionNo) tail.rows.push(row);
+    else out.push({ sectionNo: row.sectionNo, sectionName: row.sectionName, rows: [row] });
+  }
+  return out;
+}
+
+interface SortColumnHeaderProps {
+  title: string;
+  column: SortColumnId;
+  sortColumn: SortColumnId | null;
+  sortDir: "asc" | "desc";
+  cycleSort: (c: SortColumnId) => void;
+  filters: TableFiltersState;
+  setFilters: Dispatch<SetStateAction<TableFiltersState>>;
+  filterContent: ReactNode;
+  className?: string;
+}
+
+function SortColumnHeader({
+  title,
+  column,
+  sortColumn,
+  sortDir,
+  cycleSort,
+  filters,
+  setFilters,
+  filterContent,
+  className,
+}: SortColumnHeaderProps) {
+  const active = filtersAreActive(filters);
+  const thisFilterActive =
+    (column === "sectionNo" && filters.sectionNo.trim() !== "") ||
+    (column === "serialNo" && filters.serialNo.trim() !== "") ||
+    (column === "question" && filters.question.trim() !== "") ||
+    (column === "answer" && filters.answer.trim() !== "") ||
+    (column === "sources" && filters.sources.trim() !== "") ||
+    (column === "validation" && filters.aiValidation !== "any") ||
+    (column === "validationSources" && filters.aiValidationSources.trim() !== "") ||
+    (column === "kycAgentRecon" && filters.kycAgentRecon !== "any") ||
+    (column === "analystComments" && filters.analyst.trim() !== "");
+
+  const SortIcon =
+    sortColumn === column ? (sortDir === "asc" ? ArrowUp : ArrowDown) : ArrowUpDown;
+
+  return (
+    <TableHead className={className}>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 text-left font-medium hover:text-foreground/90 mr-auto"
+          onClick={() => cycleSort(column)}
+        >
+          <span className="leading-tight">{title}</span>
+          <SortIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+        </button>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant={thisFilterActive ? "secondary" : "ghost"}
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              aria-label={`Filter ${title}`}
+            >
+              <Filter className="h-3.5 w-3.5" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-72 space-y-3" align="start">
+            <div className="font-medium text-sm">{title}</div>
+            {filterContent}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={() =>
+                setFilters((prev) => {
+                  const next = { ...prev };
+                  if (column === "sectionNo") next.sectionNo = INITIAL_FILTERS.sectionNo;
+                  if (column === "serialNo") next.serialNo = INITIAL_FILTERS.serialNo;
+                  if (column === "question") next.question = INITIAL_FILTERS.question;
+                  if (column === "answer") next.answer = INITIAL_FILTERS.answer;
+                  if (column === "sources") next.sources = INITIAL_FILTERS.sources;
+                  if (column === "validation") next.aiValidation = INITIAL_FILTERS.aiValidation;
+                  if (column === "validationSources")
+                    next.aiValidationSources = INITIAL_FILTERS.aiValidationSources;
+                  if (column === "kycAgentRecon")
+                    next.kycAgentRecon = INITIAL_FILTERS.kycAgentRecon;
+                  if (column === "analystComments") next.analyst = INITIAL_FILTERS.analyst;
+                  return next;
+                })
+              }
+            >
+              Clear this filter
+            </Button>
+            {active && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full"
+                onClick={() => setFilters({ ...INITIAL_FILTERS })}
+              >
+                Clear all filters
+              </Button>
+            )}
+          </PopoverContent>
+        </Popover>
+      </div>
+    </TableHead>
+  );
+}
 
 export function ResultsTable({
   companyName,
@@ -98,19 +373,44 @@ export function ResultsTable({
     null
   );
   const [editValue, setEditValue] = useState("");
+  const [filters, setFilters] = useState<TableFiltersState>(INITIAL_FILTERS);
+  const [sortColumn, setSortColumn] = useState<SortColumnId | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
-  const grouped = useMemo(() => {
-    const map = new Map<number, { sectionName: string; rows: KYCRow[] }>();
-    for (const row of rows) {
-      if (!map.has(row.sectionNo)) {
-        map.set(row.sectionNo, { sectionName: row.sectionName, rows: [] });
-      }
-      map.get(row.sectionNo)!.rows.push(row);
+  const filteredSortedGrouped = useMemo(() => {
+    const filtered = rows.filter((row) => rowPassesFilters(row, filters));
+    let sorted: KYCRow[];
+    if (!sortColumn) {
+      sorted = [...filtered].sort((a, b) => a.serialNo - b.serialNo);
+    } else {
+      sorted = [...filtered].sort((a, b) => {
+        let c = cmpByColumn(sortColumn, a, b);
+        if (sortDir === "desc") c = -c;
+        if (c !== 0) return c;
+        return a.serialNo - b.serialNo;
+      });
     }
-    return Array.from(map.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([sectionNo, value]) => ({ sectionNo, ...value }));
-  }, [rows]);
+    return regroupConsecutive(sorted);
+  }, [rows, filters, sortColumn, sortDir]);
+
+  const filteredCount = useMemo(
+    () => rows.filter((row) => rowPassesFilters(row, filters)).length,
+    [rows, filters]
+  );
+
+  const cycleSort = (col: SortColumnId) => {
+    if (sortColumn !== col) {
+      setSortColumn(col);
+      setSortDir("asc");
+      return;
+    }
+    if (sortDir === "asc") {
+      setSortDir("desc");
+      return;
+    }
+    setSortColumn(null);
+    setSortDir("asc");
+  };
 
   const startEditing = (serialNo: number, field: EditingField, current: string) => {
     setEditing({ serialNo, field });
@@ -131,8 +431,6 @@ export function ResultsTable({
       onRowChange(serialNo, { analystComments: editValue });
     } else if (field === "sources") {
       onRowChange(serialNo, { sources: textToSources(editValue) });
-    } else if (field === "validationSources") {
-      onRowChange(serialNo, { validationSources: textToValidationSources(editValue) });
     }
     setEditing(null);
     setEditValue("");
@@ -170,6 +468,7 @@ export function ResultsTable({
             {row.answer || <span className="text-muted-foreground">Not extracted</span>}
           </div>
           <button
+            type="button"
             onClick={() => startEditing(row.serialNo, "answer", row.answer)}
             className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-muted rounded"
             aria-label="Edit answer"
@@ -208,6 +507,7 @@ export function ResultsTable({
             )}
           </div>
           <button
+            type="button"
             onClick={() =>
               startEditing(row.serialNo, "sources", sourcesToText(row.sources))
             }
@@ -224,28 +524,66 @@ export function ResultsTable({
   const renderValidationCell = (row: KYCRow) => {
     const value: ValidationStatus = row.validation;
     return (
+      <div className="min-h-[32px] flex items-center">
+        {value === "Yes" ? (
+          <Badge className="bg-green-500/20 text-green-700 border-green-500/50 text-xs">
+            Yes
+          </Badge>
+        ) : value === "No" ? (
+          <Badge className="bg-red-500/20 text-red-700 border-red-500/50 text-xs">No</Badge>
+        ) : (
+          <span className="text-muted-foreground text-xs">—</span>
+        )}
+      </div>
+    );
+  };
+
+  const renderValidationSourcesCell = (row: KYCRow) => {
+    if (row.validation !== "Yes") {
+      return <span className="text-muted-foreground text-xs">—</span>;
+    }
+    return (
+      <div className="space-y-1">
+        {row.validationSources.length === 0 ? (
+          <span className="text-muted-foreground text-xs">No document source</span>
+        ) : (
+          row.validationSources.map((src, idx) => (
+            <div key={idx} className="text-xs">
+              <span className="font-medium">{src.document}</span>
+              {typeof src.page === "number" && (
+                <span className="text-muted-foreground"> (p.{src.page})</span>
+              )}
+              {src.excerpt && (
+                <div className="text-muted-foreground italic mt-0.5">
+                  &ldquo;{src.excerpt}&rdquo;
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    );
+  };
+
+  const renderKycAgentReconCell = (row: KYCRow) => {
+    const value = row.kycAgentRecon;
+    return (
       <Select
         value={value === "" ? "__blank__" : value}
         onValueChange={(v) => {
-          const next: ValidationStatus =
-            v === "Yes" ? "Yes" : v === "No" ? "No" : "";
-          const updates: Partial<KYCRow> = { validation: next };
-          if (next !== "Yes") {
-            updates.validationSources = [];
-          }
-          onRowChange(row.serialNo, updates);
+          const next: KycAgentReconValue | "" =
+            v === "Yes" ? "Yes" : v === "No" ? "No" : v === "NA" ? "NA" : "";
+          onRowChange(row.serialNo, { kycAgentRecon: next });
         }}
       >
-        <SelectTrigger className="h-8 w-[100px] text-xs">
+        <SelectTrigger className="h-8 min-w-[100px] text-xs">
           <SelectValue>
             {value === "Yes" ? (
-              <Badge className="bg-green-500/20 text-green-700 border-green-500/50 text-xs">
-                Yes
-              </Badge>
+              <span className="text-xs">Yes</span>
             ) : value === "No" ? (
-              <Badge className="bg-red-500/20 text-red-700 border-red-500/50 text-xs">
-                No
-              </Badge>
+              <span className="text-xs">No</span>
+            ) : value === "NA" ? (
+              <span className="text-xs">NA</span>
             ) : (
               <span className="text-muted-foreground text-xs">—</span>
             )}
@@ -255,59 +593,9 @@ export function ResultsTable({
           <SelectItem value="__blank__">—</SelectItem>
           <SelectItem value="Yes">Yes</SelectItem>
           <SelectItem value="No">No</SelectItem>
+          <SelectItem value="NA">NA</SelectItem>
         </SelectContent>
       </Select>
-    );
-  };
-
-  const renderValidationSourcesCell = (row: KYCRow) => {
-    const isEditing =
-      editing?.serialNo === row.serialNo && editing.field === "validationSources";
-    if (isEditing) {
-      return renderEditor(
-        "One per line. Format: document.pdf | p.3 | optional excerpt"
-      );
-    }
-    if (row.validation !== "Yes") {
-      return <span className="text-muted-foreground text-xs">—</span>;
-    }
-    return (
-      <div className="group">
-        <div className="flex items-start gap-2">
-          <div className="flex-1 space-y-1">
-            {row.validationSources.length === 0 ? (
-              <span className="text-muted-foreground text-xs">No document source</span>
-            ) : (
-              row.validationSources.map((src, idx) => (
-                <div key={idx} className="text-xs">
-                  <span className="font-medium">{src.document}</span>
-                  {typeof src.page === "number" && (
-                    <span className="text-muted-foreground"> (p.{src.page})</span>
-                  )}
-                  {src.excerpt && (
-                    <div className="text-muted-foreground italic mt-0.5">
-                      &ldquo;{src.excerpt}&rdquo;
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-          <button
-            onClick={() =>
-              startEditing(
-                row.serialNo,
-                "validationSources",
-                validationSourcesToText(row.validationSources)
-              )
-            }
-            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-muted rounded"
-            aria-label="Edit validation sources"
-          >
-            <Pencil className="h-3 w-3 text-muted-foreground" />
-          </button>
-        </div>
-      </div>
     );
   };
 
@@ -326,6 +614,7 @@ export function ResultsTable({
             )}
           </div>
           <button
+            type="button"
             onClick={() =>
               startEditing(row.serialNo, "analystComments", row.analystComments)
             }
@@ -339,6 +628,8 @@ export function ResultsTable({
     );
   };
 
+  const anyFilterActive = filtersAreActive(filters);
+
   return (
     <div className="space-y-4">
       <KYCStatsBar rows={rows} />
@@ -347,7 +638,12 @@ export function ResultsTable({
         <div>
           <h2 className="text-2xl font-bold">KYC Results: {companyName}</h2>
           <p className="text-sm text-muted-foreground">
-            {rows.length} questions across {grouped.length} sections
+            {anyFilterActive
+              ? `Showing ${filteredCount} of ${rows.length} questions (${filteredSortedGrouped.length} section groups)`
+              : `${rows.length} questions across ${filteredSortedGrouped.length} sections`}
+            {sortColumn != null
+              ? ` · Sorted by ${SORT_COLUMN_LABELS[sortColumn]} (${sortDir})`
+              : ""}
           </p>
         </div>
         <div className="flex gap-2">
@@ -364,20 +660,242 @@ export function ResultsTable({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-20">Section No.</TableHead>
-                <TableHead className="w-24">Question No.</TableHead>
-                <TableHead className="min-w-[260px]">Question</TableHead>
-                <TableHead className="min-w-[240px] bg-primary/5">Answers</TableHead>
-                <TableHead className="min-w-[220px]">Sources</TableHead>
-                <TableHead className="w-[120px]">Validation</TableHead>
-                <TableHead className="min-w-[220px]">Validation Sources</TableHead>
-                <TableHead className="min-w-[200px]">Analyst Comments</TableHead>
+                <SortColumnHeader
+                  title="Section No."
+                  column="sectionNo"
+                  sortColumn={sortColumn}
+                  sortDir={sortDir}
+                  cycleSort={cycleSort}
+                  filters={filters}
+                  setFilters={setFilters}
+                  filterContent={
+                    <>
+                      <Label htmlFor="f-sec">Equals</Label>
+                      <Input
+                        id="f-sec"
+                        inputMode="numeric"
+                        placeholder="e.g. 2"
+                        value={filters.sectionNo}
+                        onChange={(e) =>
+                          setFilters((f) => ({ ...f, sectionNo: e.target.value }))
+                        }
+                      />
+                    </>
+                  }
+                  className="w-24"
+                />
+                <SortColumnHeader
+                  title="Question No."
+                  column="serialNo"
+                  sortColumn={sortColumn}
+                  sortDir={sortDir}
+                  cycleSort={cycleSort}
+                  filters={filters}
+                  setFilters={setFilters}
+                  filterContent={
+                    <>
+                      <Label htmlFor="f-ser">Equals</Label>
+                      <Input
+                        id="f-ser"
+                        inputMode="numeric"
+                        placeholder="e.g. 12"
+                        value={filters.serialNo}
+                        onChange={(e) =>
+                          setFilters((f) => ({ ...f, serialNo: e.target.value }))
+                        }
+                      />
+                    </>
+                  }
+                  className="w-28"
+                />
+                <SortColumnHeader
+                  title="Question"
+                  column="question"
+                  sortColumn={sortColumn}
+                  sortDir={sortDir}
+                  cycleSort={cycleSort}
+                  filters={filters}
+                  setFilters={setFilters}
+                  filterContent={
+                    <>
+                      <Label htmlFor="f-q">Contains (case-insensitive)</Label>
+                      <Input
+                        id="f-q"
+                        value={filters.question}
+                        onChange={(e) =>
+                          setFilters((f) => ({ ...f, question: e.target.value }))
+                        }
+                      />
+                    </>
+                  }
+                  className="min-w-[200px]"
+                />
+                <SortColumnHeader
+                  title="Answers"
+                  column="answer"
+                  sortColumn={sortColumn}
+                  sortDir={sortDir}
+                  cycleSort={cycleSort}
+                  filters={filters}
+                  setFilters={setFilters}
+                  filterContent={
+                    <>
+                      <Label htmlFor="f-a">Contains</Label>
+                      <Input
+                        id="f-a"
+                        value={filters.answer}
+                        onChange={(e) =>
+                          setFilters((f) => ({ ...f, answer: e.target.value }))
+                        }
+                      />
+                    </>
+                  }
+                  className="min-w-[200px] bg-primary/5"
+                />
+                <SortColumnHeader
+                  title="Sources"
+                  column="sources"
+                  sortColumn={sortColumn}
+                  sortDir={sortDir}
+                  cycleSort={cycleSort}
+                  filters={filters}
+                  setFilters={setFilters}
+                  filterContent={
+                    <>
+                      <Label htmlFor="f-src">Contains</Label>
+                      <Input
+                        id="f-src"
+                        value={filters.sources}
+                        onChange={(e) =>
+                          setFilters((f) => ({ ...f, sources: e.target.value }))
+                        }
+                      />
+                    </>
+                  }
+                  className="min-w-[180px]"
+                />
+                <SortColumnHeader
+                  title="AI Validation"
+                  column="validation"
+                  sortColumn={sortColumn}
+                  sortDir={sortDir}
+                  cycleSort={cycleSort}
+                  filters={filters}
+                  setFilters={setFilters}
+                  filterContent={
+                    <>
+                      <Label>Value</Label>
+                      <Select
+                        value={filters.aiValidation}
+                        onValueChange={(v) =>
+                          setFilters((f) => ({
+                            ...f,
+                            aiValidation: v as AiValidationFilter,
+                          }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="any">Any</SelectItem>
+                          <SelectItem value="yes">Yes</SelectItem>
+                          <SelectItem value="no">No</SelectItem>
+                          <SelectItem value="empty">Empty / —</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </>
+                  }
+                  className="w-[124px]"
+                />
+                <SortColumnHeader
+                  title="AI Validation Sources"
+                  column="validationSources"
+                  sortColumn={sortColumn}
+                  sortDir={sortDir}
+                  cycleSort={cycleSort}
+                  filters={filters}
+                  setFilters={setFilters}
+                  filterContent={
+                    <>
+                      <Label htmlFor="f-vs">Contains</Label>
+                      <Input
+                        id="f-vs"
+                        value={filters.aiValidationSources}
+                        onChange={(e) =>
+                          setFilters((f) => ({
+                            ...f,
+                            aiValidationSources: e.target.value,
+                          }))
+                        }
+                      />
+                    </>
+                  }
+                  className="min-w-[200px]"
+                />
+                <SortColumnHeader
+                  title="KYC_Agent_Recon"
+                  column="kycAgentRecon"
+                  sortColumn={sortColumn}
+                  sortDir={sortDir}
+                  cycleSort={cycleSort}
+                  filters={filters}
+                  setFilters={setFilters}
+                  filterContent={
+                    <>
+                      <Label>Value</Label>
+                      <Select
+                        value={filters.kycAgentRecon}
+                        onValueChange={(v) =>
+                          setFilters((f) => ({
+                            ...f,
+                            kycAgentRecon: v as KycReconColumnFilter,
+                          }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="any">Any</SelectItem>
+                          <SelectItem value="yes">Yes</SelectItem>
+                          <SelectItem value="no">No</SelectItem>
+                          <SelectItem value="na">NA</SelectItem>
+                          <SelectItem value="empty">Empty / —</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </>
+                  }
+                  className="w-[148px]"
+                />
+                <SortColumnHeader
+                  title="Analyst Comments"
+                  column="analystComments"
+                  sortColumn={sortColumn}
+                  sortDir={sortDir}
+                  cycleSort={cycleSort}
+                  filters={filters}
+                  setFilters={setFilters}
+                  filterContent={
+                    <>
+                      <Label htmlFor="f-an">Contains</Label>
+                      <Input
+                        id="f-an"
+                        value={filters.analyst}
+                        onChange={(e) =>
+                          setFilters((f) => ({ ...f, analyst: e.target.value }))
+                        }
+                      />
+                    </>
+                  }
+                  className="min-w-[200px]"
+                />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {grouped.map((section) => (
+              {filteredSortedGrouped.map((section, secIdx) => (
                 <SectionRows
-                  key={section.sectionNo}
+                  key={`${section.sectionNo}-${secIdx}`}
                   sectionNo={section.sectionNo}
                   sectionName={section.sectionName}
                   rows={section.rows}
@@ -385,6 +903,7 @@ export function ResultsTable({
                   renderSourcesCell={renderSourcesCell}
                   renderValidationCell={renderValidationCell}
                   renderValidationSourcesCell={renderValidationSourcesCell}
+                  renderKycAgentReconCell={renderKycAgentReconCell}
                   renderAnalystCommentsCell={renderAnalystCommentsCell}
                 />
               ))}
@@ -400,11 +919,12 @@ interface SectionRowsProps {
   sectionNo: number;
   sectionName: string;
   rows: KYCRow[];
-  renderAnswerCell: (row: KYCRow) => React.ReactNode;
-  renderSourcesCell: (row: KYCRow) => React.ReactNode;
-  renderValidationCell: (row: KYCRow) => React.ReactNode;
-  renderValidationSourcesCell: (row: KYCRow) => React.ReactNode;
-  renderAnalystCommentsCell: (row: KYCRow) => React.ReactNode;
+  renderAnswerCell: (row: KYCRow) => ReactNode;
+  renderSourcesCell: (row: KYCRow) => ReactNode;
+  renderValidationCell: (row: KYCRow) => ReactNode;
+  renderValidationSourcesCell: (row: KYCRow) => ReactNode;
+  renderKycAgentReconCell: (row: KYCRow) => ReactNode;
+  renderAnalystCommentsCell: (row: KYCRow) => ReactNode;
 }
 
 function SectionRows({
@@ -415,12 +935,13 @@ function SectionRows({
   renderSourcesCell,
   renderValidationCell,
   renderValidationSourcesCell,
+  renderKycAgentReconCell,
   renderAnalystCommentsCell,
 }: SectionRowsProps) {
   return (
     <>
       <TableRow className="bg-muted/40">
-        <TableCell colSpan={8} className="font-semibold text-sm">
+        <TableCell colSpan={9} className="font-semibold text-sm">
           Section {sectionNo} &mdash; {sectionName}
         </TableCell>
       </TableRow>
@@ -433,6 +954,7 @@ function SectionRows({
           <TableCell className="align-top">{renderSourcesCell(row)}</TableCell>
           <TableCell className="align-top">{renderValidationCell(row)}</TableCell>
           <TableCell className="align-top">{renderValidationSourcesCell(row)}</TableCell>
+          <TableCell className="align-top">{renderKycAgentReconCell(row)}</TableCell>
           <TableCell className="align-top">{renderAnalystCommentsCell(row)}</TableCell>
         </TableRow>
       ))}

@@ -21,8 +21,9 @@ const HEADERS = [
   "Question",
   "Answers",
   "Sources",
-  "Validation",
-  "Validation Sources",
+  "AI Validation",
+  "AI Validation Sources",
+  "KYC_Agent_Recon",
   "Analyst Comments",
 ];
 
@@ -51,6 +52,7 @@ const rowToColumns = (row: KYCRow): string[] => [
   sourcesAsText(row),
   row.validation || "",
   validationSourcesAsText(row),
+  row.kycAgentRecon || "",
   row.analystComments,
 ];
 
@@ -147,6 +149,7 @@ function generatePDFHTML(companyName: string, rows: KYCRow[]): string {
         <td>${escapeHtml(sourcesAsText(row))}</td>
         <td>${escapeHtml(row.validation || "")}</td>
         <td>${escapeHtml(validationSourcesAsText(row))}</td>
+        <td>${escapeHtml(row.kycAgentRecon || "")}</td>
         <td>${escapeHtml(row.analystComments)}</td>
       </tr>`
     )
