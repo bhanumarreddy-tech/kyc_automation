@@ -6,6 +6,7 @@ React side (see ``src/data/kycQuestions.ts``).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -46,4 +47,30 @@ class KYCRow(BaseModel):
 
 
 class ProcessResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    rows: list[KYCRow]
+    submission_id: str | None = Field(default=None, alias="submissionId")
+    saved_at: datetime | None = Field(default=None, alias="savedAt")
+
+
+class HistoryListItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    submission_id: str = Field(alias="submissionId")
+    company_name: str = Field(alias="companyName")
+    created_at: datetime = Field(alias="createdAt")
+    document_count: int = Field(default=0, alias="documentCount")
+
+
+class HistoryDetailResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    submission_id: str = Field(alias="submissionId")
+    company_name: str = Field(alias="companyName")
+    created_at: datetime = Field(alias="createdAt")
+    document_filenames: list[str] = Field(
+        default_factory=list,
+        alias="documentFilenames",
+    )
     rows: list[KYCRow]

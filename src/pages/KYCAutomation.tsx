@@ -3,7 +3,16 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Upload, FileText, Home, X, ArrowLeft } from "lucide-react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Upload, FileText, Home, X, ArrowLeft, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import ProcessingView from "@/components/kyc/ProcessingView";
 import { ResultsTable } from "@/components/kyc/ResultsTable";
@@ -12,8 +21,17 @@ import type { KYCRow } from "@/data/kycQuestions";
 import { apiUrl } from "@/lib/api";
 
 type WorkflowStep = "upload" | "processing" | "results";
+type MainTab = "run" | "history";
+
+interface HistoryListItem {
+  submissionId: string;
+  companyName: string;
+  createdAt: string;
+  documentCount: number;
+}
 
 const API_ENDPOINT = apiUrl("/api/process");
+const HISTORY_LIST_ENDPOINT = apiUrl("/api/history");
 
 export default function KYCAutomation() {
   const navigate = useNavigate();
@@ -23,6 +41,12 @@ export default function KYCAutomation() {
   const [files, setFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [rows, setRows] = useState<KYCRow[]>([]);
+  const [mainTab, setMainTab] = useState<MainTab>("run");
+  const [historyDetailId, setHistoryDetailId] = useState<string | null>(null);
+  const [historyItems, setHistoryItems] = useState<HistoryListItem[]>([]);
+  const [historyListLoading, setHistoryListLoading] = useState(false);
+  const [historyListError, setHistoryListError] = useState<string | null>(null);
+  const [historyDetailLoading, setHistoryDetailLoading] = useState(false);
 
   useEffect(() => {
     const preventDefaults = (e: DragEvent) => {
@@ -42,6 +66,40 @@ export default function KYCAutomation() {
       document.removeEventListener("drop", preventDefaults);
     };
   }, []);
+
+  useEffect(() => {
+    if (mainTab !== "history" || historyDetailId !== null) {
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      setHistoryListLoading(true);
+      setHistoryListError(null);
+      try {
+        const res = await fetch(HISTORY_LIST_ENDPOINT);
+        if (!res.ok) {
+          throw new Error(`Failed to load history (${res.status})`);
+        }
+        const data = (await res.json()) as HistoryListItem[];
+        if (!cancelled) {
+          setHistoryItems(Array.isArray(data) ? data : []);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setHistoryListError(e instanceof Error ? e.message : "Failed to load history");
+          setHistoryItems([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setHistoryListLoading(false);
+        }
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [mainTab, historyDetailId]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -94,6 +152,51 @@ export default function KYCAutomation() {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const closeHistoryDetail = () => {
+    setHistoryDetailId(null);
+    setRows([]);
+    setCompanyName("");
+  };
+
+  const openHistorySubmission = async (submissionId: string) => {
+    setHistoryDetailLoading(true);
+    setHistoryListError(null);
+    try {
+      const res = await fetch(apiUrl(`/api/history/${submissionId}`));
+      if (res.status === 503) {
+        toast({
+          title: "History unavailable",
+          description: "Database is not configured on the server.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Failed to load submission (${res.status})`);
+      }
+      const data = (await res.json()) as {
+        companyName: string;
+        rows: KYCRow[];
+      };
+      if (!data?.rows || !Array.isArray(data.rows)) {
+        throw new Error("Invalid submission payload");
+      }
+      setCompanyName(data.companyName);
+      setRows(data.rows);
+      setHistoryDetailId(submissionId);
+    } catch (e) {
+      console.error(e);
+      toast({
+        title: "Could not open submission",
+        description: e instanceof Error ? e.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setHistoryDetailLoading(false);
+    }
+  };
+
   const buildEmptyRows = (): KYCRow[] =>
     kycQuestions.map((q) => ({
       sectionNo: q.sectionNo,
@@ -136,7 +239,10 @@ export default function KYCAutomation() {
         throw new Error(`Backend error ${res.status}: ${text || res.statusText}`);
       }
 
-      const data = (await res.json()) as { rows: KYCRow[] };
+      const data = (await res.json()) as {
+        rows: KYCRow[];
+        submissionId?: string;
+      };
       if (!data?.rows || !Array.isArray(data.rows)) {
         throw new Error("Backend returned an invalid response");
       }
@@ -146,7 +252,9 @@ export default function KYCAutomation() {
 
       toast({
         title: "Processing complete",
-        description: `KYC questionnaire populated for ${companyName.trim()}.`,
+        description: data.submissionId
+          ? `KYC questionnaire populated for ${companyName.trim()}. Saved to history.`
+          : `KYC questionnaire populated for ${companyName.trim()}.`,
       });
     } catch (error) {
       console.error("Processing error:", error);
@@ -173,6 +281,10 @@ export default function KYCAutomation() {
   };
 
   const handleBack = () => {
+    if (mainTab === "history" && historyDetailId) {
+      closeHistoryDetail();
+      return;
+    }
     if (step === "results") {
       setStep("upload");
     } else if (step === "upload") {
@@ -212,7 +324,18 @@ export default function KYCAutomation() {
           </div>
         </div>
 
-        {step === "upload" && (
+        <Tabs
+          value={mainTab}
+          onValueChange={(v) => setMainTab(v as MainTab)}
+          className="w-full"
+        >
+          <TabsList>
+            <TabsTrigger value="run">New run</TabsTrigger>
+            <TabsTrigger value="history">History</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="run" className="mt-6 space-y-6">
+            {step === "upload" && (
           <div className="max-w-2xl mx-auto space-y-6">
             <div className="bg-card p-6 rounded-lg border shadow-sm space-y-6">
               <div className="space-y-2">
@@ -299,20 +422,105 @@ export default function KYCAutomation() {
               </Button>
             </div>
           </div>
-        )}
+            )}
 
-        {step === "processing" && (
+            {step === "processing" && (
           <ProcessingView companyName={companyName} fileCount={files.length} />
-        )}
+            )}
 
-        {step === "results" && (
+            {step === "results" && (
           <ResultsTable
             companyName={companyName}
             rows={rows}
             onReset={handleReset}
             onRowChange={handleRowChange}
           />
-        )}
+            )}
+          </TabsContent>
+
+          <TabsContent value="history" className="mt-6 space-y-4">
+            {historyDetailLoading && (
+              <div className="flex justify-center py-16">
+                <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" aria-hidden />
+              </div>
+            )}
+
+            {!historyDetailLoading && historyDetailId && (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" onClick={closeHistoryDetail}>
+                    Back to list
+                  </Button>
+                </div>
+                <ResultsTable
+                  companyName={companyName}
+                  rows={rows}
+                  onReset={closeHistoryDetail}
+                  onRowChange={handleRowChange}
+                />
+              </>
+            )}
+
+            {!historyDetailLoading && !historyDetailId && (
+              <>
+                {historyListLoading && (
+                  <div className="flex justify-center py-16">
+                    <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" aria-hidden />
+                  </div>
+                )}
+                {historyListError && (
+                  <p className="text-sm text-destructive">{historyListError}</p>
+                )}
+                {!historyListLoading && !historyListError && historyItems.length === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    No saved runs yet. Complete a run while the server has{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">DATABASE_URL</code> set
+                    to store results here.
+                  </p>
+                )}
+                {!historyListLoading && historyItems.length > 0 && (
+                  <div className="rounded-md border bg-card">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Client</TableHead>
+                          <TableHead className="hidden sm:table-cell">Documents</TableHead>
+                          <TableHead>Saved</TableHead>
+                          <TableHead className="text-right">Open</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {historyItems.map((item) => (
+                          <TableRow key={item.submissionId}>
+                            <TableCell className="font-medium max-w-[200px] truncate sm:max-w-md">
+                              {item.companyName}
+                            </TableCell>
+                            <TableCell className="hidden sm:table-cell text-muted-foreground">
+                              {item.documentCount}
+                            </TableCell>
+                            <TableCell className="text-muted-foreground whitespace-nowrap">
+                              {new Date(item.createdAt).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => void openHistorySubmission(item.submissionId)}
+                              >
+                                Open
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </>
+            )}
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.config import get_settings
+from app.db.session import db_session_maker
+from app.db.submissions import create_kyc_submission
 from app.schemas import ProcessResponse
 from app.services.pipeline import run_pipeline
 
@@ -49,4 +52,25 @@ async def process_kyc(
     )
 
     rows = await run_pipeline(company, uploads)
-    return ProcessResponse(rows=rows)
+
+    submission_id_out: str | None = None
+    saved_at_out: datetime | None = None
+    maker = db_session_maker()
+    if maker is not None:
+        doc_names = [fn for fn, _, _ in uploads]
+        async with maker() as db_session:
+            record = await create_kyc_submission(
+                db_session,
+                company_name=company,
+                rows=rows,
+                document_filenames=doc_names,
+            )
+            await db_session.commit()
+            submission_id_out = str(record.id)
+            saved_at_out = record.created_at
+
+    return ProcessResponse(
+        rows=rows,
+        submission_id=submission_id_out,
+        saved_at=saved_at_out,
+    )
