@@ -2,8 +2,9 @@
 
 For each KYC section we make a single Claude call that:
 
-* Has the ``web_search_20250305`` server-side tool available so it can pull
-  fresh information from the public internet.
+* Registers the configured server-side web search tool (default
+  ``web_search_20260209`` with dynamic filtering for Opus 4.7 / Sonnet 4.6;
+  override via ``WEB_SEARCH_TOOL_TYPE``).
 * Returns a strict JSON object listing the answer and citation links for
   every question in the section.
 """
@@ -14,7 +15,7 @@ import json
 import logging
 from dataclasses import dataclass
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.questions import KYCQuestion
 from app.services.claude_client import get_client, parse_json_response
 
@@ -152,6 +153,20 @@ def _summarise_blocks(content: list) -> str:
     return ",".join(parts) if parts else "<empty>"
 
 
+def build_web_search_tool(settings: Settings) -> dict[str, object]:
+    """Build the server ``web_search`` tool dict for :meth:`messages.create`."""
+    spec: dict[str, object] = {
+        "type": settings.web_search_tool_type,
+        "name": "web_search",
+        "max_uses": settings.max_web_searches,
+    }
+    if settings.web_search_direct_only:
+        # Disables dynamic code-exec filtering path; required for some ZDR
+        # setups per Anthropic server-tools docs.
+        spec["allowed_callers"] = ["direct"]
+    return spec
+
+
 def _count_web_searches(response: object) -> int:
     """Authoritative web-search count: prefer typed usage, fall back to blocks.
 
@@ -187,20 +202,19 @@ async def answer_section(
     user_message = _build_user_message(company, section_no, section_name, questions)
 
     logger.info(
-        "Answering section %d (%s) with %d question(s) for '%s'",
+        "Answering section %d (%s) with %d question(s) for '%s' "
+        "(model=%s, web_search_tool=%s, max_uses=%d, direct_only=%s)",
         section_no,
         section_name,
         len(questions),
         company,
+        settings.anthropic_model,
+        settings.web_search_tool_type,
+        settings.max_web_searches,
+        settings.web_search_direct_only,
     )
 
-    tools = [
-        {
-            "type": "web_search_20250305",
-            "name": "web_search",
-            "max_uses": settings.max_web_searches,
-        }
-    ]
+    tools = [build_web_search_tool(settings)]
 
     # NOTE: no assistant prefill. With the web_search server tool the model
     # needs to start its turn with a server_tool_use block, not text. A
@@ -222,12 +236,10 @@ async def answer_section(
         try:
             response = await client.messages.create(
                 model=settings.anthropic_model,
-                # Output is a small JSON object (one entry per question, ~50
-                # tokens each); 2048 is ample even for the largest section
-                # and keeps the per-request output reservation modest, which
-                # also feeds into Anthropic's per-minute rate-limit
-                # projection for the request.
-                max_tokens=2048,
+                # JSON for a full section can be long (multi-line answers,
+                # many source URLs). 4096 keeps headroom while staying below
+                # typical max-output caps.
+                max_tokens=4096,
                 system=_SYSTEM_PROMPT,
                 tools=tools,
                 messages=messages,

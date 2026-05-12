@@ -10,6 +10,16 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+# Default model for answer + validation calls. Claude Opus 4.7 is the strongest
+# general Claude API model paired with ``web_search_20260209`` (dynamic-filter
+# web search). Override via ANTHROPIC_MODEL when needed.
+DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-7"
+
+# Latest web-search server tool (`web_search_20260209`): uses code-assisted
+# filtering so less raw HTML floods the context than ``web_search_20250305``.
+# Fallback: set WEB_SEARCH_TOOL_TYPE=web_search_20250305 for older stacks.
+DEFAULT_WEB_SEARCH_TOOL_TYPE = "web_search_20260209"
+
 
 def _parse_origins(raw: str | None) -> list[str]:
     if not raw:
@@ -28,13 +38,12 @@ class Settings:
     anthropic_model: str
     max_file_mb: int
     max_web_searches: int
+    web_search_tool_type: str
+    web_search_direct_only: bool
     cors_origins: list[str] = field(default_factory=list)
-    # NOTE: web_search server-tool calls add ~15k input tokens per search to
-    # a single answer call (results are inlined as web_search_tool_result
-    # blocks). On the Anthropic starter tier (30k input tokens / minute) a
-    # single answer call already exceeds the per-minute budget, so the safe
-    # default is to run answer calls sequentially and pause between them
-    # via ANSWER_INTER_CALL_DELAY_SECONDS to let the rolling window reset.
+    # NOTE: Web search consumes large input payloads (worst-case projection per
+    # request scales with MAX_WEB_SEARCHES). Starter tiers need low max_uses
+    # plus sequential answering (ANSWER_INTER_CALL_DELAY_SECONDS).
     answer_concurrency: int = 1
     answer_inter_call_delay_seconds: float = 0.0
     validation_concurrency: int = 2
@@ -75,17 +84,19 @@ def _parse_bool(name: str, default: bool) -> bool:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5").strip() or "claude-sonnet-4-5"
+    model_raw = os.environ.get("ANTHROPIC_MODEL", "").strip()
+    model = model_raw if model_raw else DEFAULT_ANTHROPIC_MODEL
+    ws_tool_raw = os.environ.get("WEB_SEARCH_TOOL_TYPE", "").strip()
+    web_search_tool_type = ws_tool_raw or DEFAULT_WEB_SEARCH_TOOL_TYPE
     return Settings(
         anthropic_api_key=api_key,
         anthropic_model=model,
         max_file_mb=_parse_int("MAX_FILE_MB", 20),
-        # NOTE: at request time Anthropic projects worst-case input tokens
-        # as roughly (prompt + max_uses * ~15k) for the web_search tool. On
-        # the 30k tokens/min starter tier even max_uses=2 (~33k projected)
-        # gets the request rejected up-front; max_uses=1 (~18k projected)
-        # is what fits. Raise this on a higher tier.
-        max_web_searches=_parse_int("MAX_WEB_SEARCHES", 1),
+        # Typical default for Opus + web_search_20260209; lower to 1 for the
+        # 30k input-tokens/min tier (see deployment notes in .env.example).
+        max_web_searches=_parse_int("MAX_WEB_SEARCHES", 10),
+        web_search_tool_type=web_search_tool_type,
+        web_search_direct_only=_parse_bool("WEB_SEARCH_DIRECT_ONLY", False),
         cors_origins=_parse_origins(os.environ.get("CORS_ORIGINS")),
         answer_concurrency=_parse_int("ANSWER_CONCURRENCY", 1),
         answer_inter_call_delay_seconds=_parse_float(

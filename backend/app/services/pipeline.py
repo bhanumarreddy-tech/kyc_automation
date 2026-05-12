@@ -2,7 +2,8 @@
 
 For each of the 8 sections we make:
 
-1. one *answer* Claude call (with the ``web_search_20250305`` tool), and
+1. one *answer* Claude call (with the ``web_search_20260209`` server search
+   tool by default; override via ``WEB_SEARCH_TOOL_TYPE``), and
 2. one *validation* Claude call (with the user's documents attached).
 
 The 8 answer calls run concurrently via :func:`asyncio.gather`. The 8
