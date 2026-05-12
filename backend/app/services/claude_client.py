@@ -58,24 +58,56 @@ def parse_json_response(message: Any, prefill: str = "") -> Any:
 
     ``prefill`` is the assistant prefix we asked the model to continue from
     (e.g. ``"{"``); it is prepended to the returned text before parsing.
-    Robust to common formatting issues (markdown fences, trailing commentary).
+    Robust to common formatting issues (markdown fences, trailing commentary,
+    stray prose adjacent to the object).
     """
-    raw = extract_text(message)
-    combined = (prefill + raw) if prefill else raw
-    cleaned = _strip_code_fences(combined)
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        # Try to pick out the first JSON object in the string.
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(cleaned[start : end + 1])
-            except json.JSONDecodeError as exc:
-                logger.warning("Failed to parse Claude response as JSON: %s", exc)
-                logger.debug("Raw text was: %s", cleaned)
-                raise
-        logger.warning("Claude response did not contain a JSON object")
-        logger.debug("Raw text was: %s", cleaned)
-        raise
+
+    def _try_parse_segment(segment: str) -> Any | None:
+        stripped = segment.strip()
+        cleaned = _strip_code_fences(stripped)
+        if not cleaned.strip():
+            return None
+        body = cleaned.strip()
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            decoder = json.JSONDecoder()
+            # Scan each `{` — raw_decode parses exactly one JSON value and skips
+            # trailing whitespace. Prefer this over slicing first `{` … last `}`
+            # which breaks when strings contain `}` or extra text is concatenated.
+            for idx in range(len(body)):
+                if body[idx] != "{":
+                    continue
+                try:
+                    obj, _end = decoder.raw_decode(body, idx)
+                    return obj
+                except json.JSONDecodeError:
+                    continue
+            return None
+
+    raw_concat = extract_text(message)
+    combined = (prefill + raw_concat) if prefill else raw_concat
+
+    parsed = _try_parse_segment(combined)
+    if parsed is not None:
+        return parsed
+
+    # Multi-block assistant turns (common with web_search) sometimes emit several
+    # ``text`` blocks — prose + JSON + trailing chatter. Parsing only the last
+    # non-empty text block often recovers the payload.
+    last_nonempty = ""
+    for block in getattr(message, "content", []) or []:
+        if getattr(block, "type", None) == "text":
+            chunk = (getattr(block, "text", "") or "").strip()
+            if chunk:
+                last_nonempty = chunk
+    if last_nonempty:
+        tail_candidate = (prefill + last_nonempty) if prefill else last_nonempty
+        if tail_candidate.strip() != combined.strip():
+            parsed_tail = _try_parse_segment(tail_candidate)
+            if parsed_tail is not None:
+                return parsed_tail
+
+    logger.warning("Claude response did not contain parsable JSON")
+    logger.debug("Combined text (prefix 4000 chars): %s", combined[:4000])
+    raise json.JSONDecodeError("no JSON object decoded", combined, 0)
