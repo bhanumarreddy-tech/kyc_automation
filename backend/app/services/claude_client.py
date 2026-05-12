@@ -10,15 +10,17 @@ small helpers for the things this codebase actually needs:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import random
 import re
 from functools import lru_cache
 from typing import Any
 
-from anthropic import AsyncAnthropic
+from anthropic import APIStatusError, AsyncAnthropic
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,38 @@ def get_client() -> AsyncAnthropic:
         api_key=settings.anthropic_api_key,
         max_retries=settings.max_retries,
     )
+
+
+async def messages_create_with_overload_retry(
+    client: AsyncAnthropic,
+    settings: Settings,
+    **kwargs: Any,
+) -> Any:
+    """Call :meth:`AsyncAnthropic.messages.create`, retrying HTTP 529 after backoff.
+
+    The SDK already retries each request up to ``settings.max_retries`` times.
+    When Anthropic is persistently overloaded, that may still fail; this adds
+    longer exponential backoff plus a small jitter before re-issuing the whole
+    request (see ``Settings.anthropic_overload_*``).
+    """
+    extra = settings.anthropic_overload_extra_attempts
+    base = settings.anthropic_overload_base_delay_seconds
+    for attempt in range(extra + 1):
+        try:
+            return await client.messages.create(**kwargs)
+        except APIStatusError as exc:
+            if getattr(exc, "status_code", None) != 529 or attempt >= extra:
+                raise
+            delay = min(120.0, base * (2**attempt))
+            delay += random.uniform(0.0, max(0.5, delay * 0.15))
+            logger.warning(
+                "Anthropic overloaded (529); backing off %.1fs (%d/%d extra rounds)",
+                delay,
+                attempt + 1,
+                extra,
+            )
+            await asyncio.sleep(delay)
+    raise RuntimeError("messages.create overload retry loop exited without result")
 
 
 def extract_text(message: Any) -> str:

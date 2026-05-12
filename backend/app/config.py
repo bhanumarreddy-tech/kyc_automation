@@ -50,6 +50,11 @@ class Settings:
     validation_attach_documents: bool = False
     enable_prompt_caching: bool = True
     max_retries: int = 5
+    # After the SDK exhausts ``max_retries`` on a single request, 529 overload
+    # can still surface. Extra waits + full retries help without changing SDK
+    # internals (see ``messages_create_with_overload_retry``).
+    anthropic_overload_extra_attempts: int = 3
+    anthropic_overload_base_delay_seconds: float = 10.0
 
 
 def _parse_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -61,6 +66,18 @@ def _parse_int(name: str, default: int, *, minimum: int = 1) -> int:
     except ValueError:
         return default
     return max(minimum, value)
+
+
+def _parse_int_min0(name: str, default: int) -> int:
+    """Like ``_parse_int`` but allows zero (e.g. disable optional retries)."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(0, value)
 
 
 def _parse_float(name: str, default: float, *, minimum: float = 0.0) -> float:
@@ -106,4 +123,10 @@ def get_settings() -> Settings:
         validation_attach_documents=_parse_bool("VALIDATION_ATTACH_DOCUMENTS", False),
         enable_prompt_caching=_parse_bool("ENABLE_PROMPT_CACHING", True),
         max_retries=_parse_int("MAX_RETRIES", 5),
+        anthropic_overload_extra_attempts=_parse_int_min0(
+            "ANTHROPIC_OVERLOAD_EXTRA_ATTEMPTS", 3
+        ),
+        anthropic_overload_base_delay_seconds=_parse_float(
+            "ANTHROPIC_OVERLOAD_BASE_DELAY_SECONDS", 10.0, minimum=1.0
+        ),
     )

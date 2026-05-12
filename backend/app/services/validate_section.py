@@ -19,7 +19,11 @@ from typing import Any
 from app.config import get_settings
 from app.questions import KYCQuestion
 from app.services.answer_section import AnsweredQuestion
-from app.services.claude_client import get_client, parse_json_response
+from app.services.claude_client import (
+    get_client,
+    messages_create_with_overload_retry,
+    parse_json_response,
+)
 from app.services.documents import ParsedDocument, text_preview
 
 logger = logging.getLogger(__name__)
@@ -56,7 +60,13 @@ _SYSTEM_PROMPT = (
     "asserts the same fact.\n"
     "- If the proposed_answer is the literal string 'Not found' (or is "
     "empty), there is nothing to support - return 'No' and an empty "
-    "validation_sources list. Do not invent or infer evidence."
+    "validation_sources list. Do not invent or infer evidence.\n"
+    "- If the proposed_answer is exactly 'Not relevant' (case-sensitive), "
+    "or (after stripping leading/trailing space) starts with "
+    "'Not applicable' — case-insensitive — the answer means the question "
+    "does not apply to this entity or context (not a missing fact). There "
+    "is no verbatim quote to match in the documents; return validation "
+    "'Yes' with an empty validation_sources list."
 )
 
 
@@ -320,7 +330,9 @@ async def validate_section(
     )
 
     try:
-        response = await client.messages.create(
+        response = await messages_create_with_overload_retry(
+            client,
+            settings,
             model=settings.anthropic_model,
             max_tokens=2048,
             system=_SYSTEM_PROMPT,

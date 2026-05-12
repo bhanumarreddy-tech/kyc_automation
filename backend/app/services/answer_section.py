@@ -18,7 +18,11 @@ from dataclasses import dataclass
 
 from app.config import Settings, get_settings
 from app.questions import KYCQuestion
-from app.services.claude_client import get_client, parse_json_response
+from app.services.claude_client import (
+    get_client,
+    messages_create_with_overload_retry,
+    parse_json_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,20 +53,34 @@ _SYSTEM_PROMPT = (
     "  company's own website / investor-relations pages, regulatory "
     "  filings, and reputable news outlets. Avoid Wikipedia and forum "
     "  posts as the sole source for a fact.\n"
-    "- Every non-'Not found' answer MUST be supported by at least one "
-    "  web_search result that you actually retrieved this turn, and that "
-    "  URL MUST appear in the 'sources' list for the question. Do NOT "
-    "  cite a URL you did not fetch.\n"
+    "- Every factual answer (anything other than the exact literals "
+    "  \"Not found\" or \"Not relevant\") MUST be supported by at least "
+    "  one web_search result that you actually retrieved this turn, and "
+    "  that URL MUST appear in the 'sources' list for the question. Do "
+    "  NOT cite a URL you did not fetch.\n"
     "- Your training-data knowledge is a tie-breaker only: use it to "
     "  disambiguate or sanity-check what the web returned, never as the "
     "  primary source. If web_search does not surface a fact in this "
     "  turn, run another search rather than falling back to memory.\n"
-    "- Return the exact string \"Not found\" (case-sensitive) with an "
-    "  empty sources list ONLY for questions that no public source can "
-    "  answer - forward-looking commitments, intent to consent to "
-    "  monitoring, signed declarations, the specific source of funds "
-    "  for the account being opened, or other private/internal facts "
-    "  that the applicant company itself must supply.\n"
+    "- Two different sentinels — choose correctly:\n"
+    "  * Return the exact string \"Not relevant\" (case-sensitive) with "
+    "    an empty sources list when the question does not apply to this "
+    "    subject or context. Examples: asking for an individual's date of "
+    "    birth, residential address, passport ID, or source of wealth when "
+    "    the entity is a corporation with no named individual in scope "
+    "    (e.g. no UBO meeting the stated threshold, so those rows are "
+    "    about natural persons but there is no such person to describe); "
+    "    sub-questions that only make sense when a parent question "
+    "    establishes a person or relationship that does not exist here. "
+    "    Do NOT use \"Not found\" for these — use \"Not relevant\".\n"
+    "  * Return the exact string \"Not found\" (case-sensitive) with an "
+    "    empty sources list ONLY when the question could in principle be "
+    "    answered from public or applicant-supplied material but you did "
+    "    not find it: private/internal facts, forward-looking commitments, "
+    "    intent to consent to monitoring, signed declarations, the "
+    "    specific source of funds for the account being opened, etc. Do "
+    "    not use \"Not found\" when the correct classification is "
+    "    non-applicability — use \"Not relevant\" instead.\n"
     "\n"
     "STYLE RULES for the 'answer' field - follow these strictly:\n"
     "1. Return only the value(s) the question asks for. Do not restate the "
@@ -104,7 +122,7 @@ _RESPONSE_FORMAT_INSTRUCTIONS = (
     "    {\n"
     '      "serial_no": <integer matching the question>,\n'
     '      "answer": <string, the bare value(s) - see STYLE RULES - or '
-    'the literal "Not found">,\n'
+    'the literal "Not found" or the literal "Not relevant">,\n'
     '      "sources": [ { "title": <string>, "url": <string> }, ... ]\n'
     "    }\n"
     "  ]\n"
@@ -161,10 +179,12 @@ def _build_user_message(
         f"incorporation facts, one for executives, one for financials, "
         f"etc.), and run additional searches if a question is still "
         f"unanswered. Cite only URLs you actually retrieved this turn. "
-        f"Reserve \"Not found\" for questions that only the applicant "
-        f"company itself can answer (declarations, intent to consent, "
-        f"the specific source of funds for the account being opened, "
-        f"private documents).\n\n"
+        f"Use the exact string \"Not relevant\" when the question does "
+        f"not apply to this entity or context (see system rules); use "
+        f"\"Not found\" only when the question could apply but public "
+        f"sources lack the fact and only the applicant can supply it "
+        f"(declarations, source of funds for the account, private "
+        f"documents).\n\n"
         f"Questions:\n" + "\n".join(question_lines) + "\n\n"
         f"{_RESPONSE_FORMAT_INSTRUCTIONS}"
     )
@@ -293,7 +313,10 @@ def _apply_declarations_public_notice(
         return results
     out: list[AnsweredQuestion] = []
     for item in results:
-        if item.answer.strip() == "Not found" or item.answer.strip() == "":
+        if (
+            item.answer.strip() == "Not found"
+            or item.answer.strip() == ""
+        ):
             out.append(
                 AnsweredQuestion(
                     serial_no=item.serial_no,
@@ -317,7 +340,9 @@ async def _create_section_answer_response(
     max_continuations = 4
     response = None
     for attempt in range(max_continuations + 1):
-        response = await client.messages.create(
+        response = await messages_create_with_overload_retry(
+            client,
+            settings,
             model=settings.anthropic_model,
             max_tokens=4096,
             system=_SYSTEM_PROMPT,
