@@ -92,22 +92,30 @@ def parse_json_response(message: Any, prefill: str = "") -> Any:
     if parsed is not None:
         return parsed
 
-    # Multi-block assistant turns (common with web_search) sometimes emit several
-    # ``text`` blocks — prose + JSON + trailing chatter. Parsing only the last
-    # non-empty text block often recovers the payload.
-    last_nonempty = ""
-    for block in getattr(message, "content", []) or []:
-        if getattr(block, "type", None) == "text":
-            chunk = (getattr(block, "text", "") or "").strip()
-            if chunk:
-                last_nonempty = chunk
-    if last_nonempty:
-        tail_candidate = (prefill + last_nonempty) if prefill else last_nonempty
-        if tail_candidate.strip() != combined.strip():
-            parsed_tail = _try_parse_segment(tail_candidate)
-            if parsed_tail is not None:
-                return parsed_tail
+    # Collect non-empty strips (same ORDER as concatenation in extract_text).
+    stripped_segments = [t.strip() for t in _assistant_text_segments(message) if t.strip()]
+
+    # Newest-first: JSON often lands in a middle block while later blocks hold
+    # stray explanations or truncation fragments.
+    for seg in reversed(stripped_segments):
+        candidate = (prefill + seg) if prefill else seg
+        if candidate.strip() == combined.strip():
+            continue
+        parsed_seg = _try_parse_segment(candidate)
+        if parsed_seg is not None:
+            return parsed_seg
 
     logger.warning("Claude response did not contain parsable JSON")
     logger.debug("Combined text (prefix 4000 chars): %s", combined[:4000])
     raise json.JSONDecodeError("no JSON object decoded", combined, 0)
+
+
+def _assistant_text_segments(message: Any) -> list[str]:
+    """Raw ``text`` block bodies in assistant message order (non-empty strings)."""
+    out: list[str] = []
+    for block in getattr(message, "content", []) or []:
+        if getattr(block, "type", None) == "text":
+            text = getattr(block, "text", "") or ""
+            if text:
+                out.append(text)
+    return out
