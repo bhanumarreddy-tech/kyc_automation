@@ -44,17 +44,28 @@ async def run_pipeline(
     # VALIDATION_CONCURRENCY).
     answer_sem = asyncio.Semaphore(settings.answer_concurrency)
     validation_sem = asyncio.Semaphore(settings.validation_concurrency)
+    inter_call_delay = settings.answer_inter_call_delay_seconds
     logger.info(
-        "Running pipeline with answer_concurrency=%d, validation_concurrency=%d, "
+        "Running pipeline with answer_concurrency=%d, "
+        "answer_inter_call_delay_seconds=%.1f, validation_concurrency=%d, "
         "validation_attach_documents=%s",
         settings.answer_concurrency,
+        inter_call_delay,
         settings.validation_concurrency,
         settings.validation_attach_documents,
     )
 
     async def _bounded_answer(section_no: int, section_name: str, questions: list) -> list[AnsweredQuestion]:
         async with answer_sem:
-            return await answer_section(company, section_no, section_name, questions)
+            result = await answer_section(company, section_no, section_name, questions)
+            # Hold the semaphore across the post-call sleep so the next queued
+            # answer call doesn't fire while we're still waiting for the
+            # rolling per-minute token window to free up. Skip the sleep on
+            # the conceptually "last" call - we don't know which one that
+            # is here, so we always sleep and accept a tiny tail latency.
+            if inter_call_delay > 0:
+                await asyncio.sleep(inter_call_delay)
+            return result
 
     async def _bounded_validate(
         section_no: int,

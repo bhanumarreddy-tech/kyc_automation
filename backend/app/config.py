@@ -29,7 +29,14 @@ class Settings:
     max_file_mb: int
     max_web_searches: int
     cors_origins: list[str] = field(default_factory=list)
-    answer_concurrency: int = 4
+    # NOTE: web_search server-tool calls add ~15k input tokens per search to
+    # a single answer call (results are inlined as web_search_tool_result
+    # blocks). On the Anthropic starter tier (30k input tokens / minute) a
+    # single answer call already exceeds the per-minute budget, so the safe
+    # default is to run answer calls sequentially and pause between them
+    # via ANSWER_INTER_CALL_DELAY_SECONDS to let the rolling window reset.
+    answer_concurrency: int = 1
+    answer_inter_call_delay_seconds: float = 0.0
     validation_concurrency: int = 2
     validation_attach_documents: bool = False
     enable_prompt_caching: bool = True
@@ -42,6 +49,17 @@ def _parse_int(name: str, default: int, *, minimum: int = 1) -> int:
         return default
     try:
         value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+def _parse_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
     except ValueError:
         return default
     return max(minimum, value)
@@ -62,9 +80,12 @@ def get_settings() -> Settings:
         anthropic_api_key=api_key,
         anthropic_model=model,
         max_file_mb=_parse_int("MAX_FILE_MB", 20),
-        max_web_searches=_parse_int("MAX_WEB_SEARCHES", 10),
+        max_web_searches=_parse_int("MAX_WEB_SEARCHES", 3),
         cors_origins=_parse_origins(os.environ.get("CORS_ORIGINS")),
-        answer_concurrency=_parse_int("ANSWER_CONCURRENCY", 4),
+        answer_concurrency=_parse_int("ANSWER_CONCURRENCY", 1),
+        answer_inter_call_delay_seconds=_parse_float(
+            "ANSWER_INTER_CALL_DELAY_SECONDS", 0.0
+        ),
         validation_concurrency=_parse_int("VALIDATION_CONCURRENCY", 2),
         validation_attach_documents=_parse_bool("VALIDATION_ATTACH_DOCUMENTS", False),
         enable_prompt_caching=_parse_bool("ENABLE_PROMPT_CACHING", True),
