@@ -142,6 +142,37 @@ def _build_user_message(
     )
 
 
+def _summarise_blocks(content: list) -> str:
+    """Compact 'type[:name]' summary of response content blocks for logs."""
+    parts: list[str] = []
+    for block in content or []:
+        block_type = getattr(block, "type", None) or "?"
+        name = getattr(block, "name", None)
+        parts.append(f"{block_type}:{name}" if name else block_type)
+    return ",".join(parts) if parts else "<empty>"
+
+
+def _count_web_searches(response: object) -> int:
+    """Authoritative web-search count: prefer typed usage, fall back to blocks.
+
+    Per Anthropic docs the canonical count is
+    ``usage.server_tool_use.web_search_requests``; we still cross-check by
+    counting ``server_tool_use`` blocks named ``web_search`` so a mismatch
+    shows up in logs.
+    """
+    usage = getattr(response, "usage", None)
+    server_tool_use = getattr(usage, "server_tool_use", None) if usage else None
+    typed = getattr(server_tool_use, "web_search_requests", None)
+    if isinstance(typed, int):
+        return typed
+    return sum(
+        1
+        for block in (getattr(response, "content", []) or [])
+        if getattr(block, "type", None) == "server_tool_use"
+        and getattr(block, "name", None) == "web_search"
+    )
+
+
 async def answer_section(
     company: str,
     section_no: int,
@@ -171,44 +202,86 @@ async def answer_section(
         }
     ]
 
-    prefill = "{"
-    messages = [
+    # NOTE: no assistant prefill. With the web_search server tool the model
+    # needs to start its turn with a server_tool_use block, not text. A
+    # prefilled "{" forces the response to begin with a text block and was
+    # observed to make the model either skip web_search entirely or emit a
+    # malformed (client-style) tool_use that the API can't run server-side.
+    # We rely on the JSON instructions in the prompt + parse_json_response's
+    # fallback ("first { ... last }") to recover the JSON payload.
+    messages: list[dict[str, object]] = [
         {"role": "user", "content": user_message},
-        {"role": "assistant", "content": prefill},
     ]
 
-    try:
-        response = await client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=8192,
-            system=_SYSTEM_PROMPT,
-            tools=tools,
-            messages=messages,
+    # Loop to handle the documented pause_turn flow: long server-tool turns
+    # may be paused by Anthropic and must be resubmitted as-is for the model
+    # to continue. Cap the loop defensively so a stuck turn can't spin.
+    max_continuations = 4
+    response = None
+    for attempt in range(max_continuations + 1):
+        try:
+            response = await client.messages.create(
+                model=settings.anthropic_model,
+                max_tokens=8192,
+                system=_SYSTEM_PROMPT,
+                tools=tools,
+                messages=messages,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface any LLM failure as empty section
+            logger.exception(
+                "Claude answer call failed for section %d: %s", section_no, exc
+            )
+            return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
+
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason != "pause_turn":
+            break
+
+        logger.info(
+            "section %d hit pause_turn (attempt %d), continuing turn",
+            section_no,
+            attempt + 1,
         )
-    except Exception as exc:  # noqa: BLE001 - surface any LLM failure as empty section
-        logger.exception(
-            "Claude answer call failed for section %d: %s", section_no, exc
-        )
-        return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
+        messages.append({"role": "assistant", "content": response.content})
 
     usage = getattr(response, "usage", None)
-    web_search_calls = sum(
-        1
-        for block in (getattr(response, "content", []) or [])
-        if getattr(block, "type", None) == "server_tool_use"
-        and getattr(block, "name", None) == "web_search"
-    )
+    web_search_calls = _count_web_searches(response)
+    content_blocks = getattr(response, "content", []) or []
     logger.info(
-        "section %d answer usage: input=%s, output=%s, stop_reason=%s, web_searches=%d",
+        "section %d answer usage: input=%s, output=%s, stop_reason=%s, "
+        "web_searches=%d, blocks=[%s]",
         section_no,
         getattr(usage, "input_tokens", None) if usage is not None else None,
         getattr(usage, "output_tokens", None) if usage is not None else None,
         getattr(response, "stop_reason", None),
         web_search_calls,
+        _summarise_blocks(content_blocks),
     )
 
+    if getattr(response, "stop_reason", None) == "tool_use":
+        # The model emitted a client-style tool_use block we can't service
+        # (we only register server tools). This is almost always a sign that
+        # the org doesn't have web_search enabled in the Claude Console, so
+        # the API silently demoted the server tool to a client tool. Log
+        # the offending tool name(s) so the cause is obvious in the logs.
+        client_tool_names = sorted(
+            {
+                str(getattr(b, "name", "") or "?")
+                for b in content_blocks
+                if getattr(b, "type", None) == "tool_use"
+            }
+        )
+        logger.warning(
+            "section %d response stopped on a client tool_use call (%s); "
+            "web_search may not be enabled for this Anthropic org. "
+            "Returning empty answers for this section.",
+            section_no,
+            ", ".join(client_tool_names) or "<unknown>",
+        )
+        return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
+
     try:
-        data = parse_json_response(response, prefill=prefill)
+        data = parse_json_response(response)
     except (json.JSONDecodeError, ValueError):
         logger.warning(
             "Could not parse JSON from answer call for section %d", section_no
