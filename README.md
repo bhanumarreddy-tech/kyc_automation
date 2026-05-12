@@ -1,99 +1,72 @@
-# Welcome to your Lovable project
+# KYC Automation
 
-## Project info
+Prototype stack for **Tiger Analytics KYC automation**: upload company documents and get a populated KYC questionnaire. The **FastAPI** backend runs per-section [Anthropic Claude](https://www.anthropic.com/) calls—one pass for answers (with optional web search) and one for document validation—against PDFs, Word files, and images extracted in-process.
 
-**URL**: https://lovable.dev/projects/8453216d-da85-44c2-a13b-70a4e59a0c31
+## Repository layout
 
-## How can I edit this code?
+| Path | Role |
+|------|------|
+| `src/` | React + TypeScript SPA (Vite, shadcn-ui, Tailwind) |
+| `backend/` | FastAPI service (`app/main.py`, routes under `app/routes/`) |
 
-There are several ways of editing your application.
+## Prerequisites
 
-**Use Lovable**
+- **Node.js** 18+ and npm (for the frontend)
+- **Python** 3.11+ (for the backend)
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/8453216d-da85-44c2-a13b-70a4e59a0c31) and start prompting.
+## Local development
 
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
+### 1. Backend
 
 ```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+cd backend
+python -m venv .venv
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+# source .venv/bin/activate
 
-# Step 3: Install the necessary dependencies.
-npm i
+pip install -r requirements.txt
+copy .env.example .env   # or: cp .env.example .env — then edit and set ANTHROPIC_API_KEY
+```
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
+Start the API (CORS defaults allow `http://localhost:8080` and `:5173`):
+
+```sh
+uvicorn app.main:app --reload --port 8000
+```
+
+Health check: `GET http://localhost:8000/api/health`
+
+Environment variables are documented in `backend/.env.example`. **`ANTHROPIC_API_KEY`** is required. Tune `MAX_WEB_SEARCHES`, `ANSWER_CONCURRENCY`, and `ANSWER_INTER_CALL_DELAY_SECONDS` for your Anthropic usage tier.
+
+### 2. Frontend
+
+From the repository root:
+
+```sh
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+Vite serves the app on **port 8080** and proxies `/api/*` to `http://localhost:8000`, so the SPA talks to your local FastAPI instance without changing code.
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+In **production builds**, the client uses the hardcoded backend origin in `src/lib/api.ts` (`PROD_BACKEND_URL`). Change that constant when you deploy the API to a new host.
 
-**Use GitHub Codespaces**
+## Tech stack
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+**Frontend:** Vite, React, TypeScript, shadcn-ui, Tailwind CSS, TanStack Query, React Router  
 
-## What technologies are used for this project?
+**Backend:** FastAPI, Uvicorn, Anthropic SDK, PyPDF, python-docx, Pillow, Pydantic
 
-This project is built with:
+## Deployment notes
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+- **Frontend (Cloudflare Workers):** The repo includes `wrangler.jsonc` for deploying the built SPA (`dist/`). Typical commands: `npm run build`, then `npx wrangler deploy`.
+- **Backend:** FastAPI cannot run on Cloudflare Workers with the current native dependencies (e.g. Pillow, PyPDF). Host `backend/` on a Python-friendly platform (Railway, Render, Fly.io, Cloud Run, etc.).
+- Set **`CORS_ORIGINS`** on the backend to include your production frontend origin (comma-separated).
+- After deploying the API, update **`PROD_BACKEND_URL`** in `src/lib/api.ts` so production builds target the correct origin (no trailing slash).
 
-## How can I deploy this project?
+## License / project origin
 
-Simply open [Lovable](https://lovable.dev/projects/8453216d-da85-44c2-a13b-70a4e59a0c31) and click on Share -> Publish.
-
-<!-- Deploy trigger: harmless comment to kick off a Cloudflare Workers build. -->
-
-### Deploying the frontend to Cloudflare Workers
-
-The repo includes a `wrangler.jsonc` that publishes the built SPA in `dist/`
-via Workers Static Assets.
-
-1. Host the FastAPI backend (in `backend/`) somewhere that runs Python —
-   Render, Railway, Fly.io, Cloud Run, etc. FastAPI **cannot** run on
-   Cloudflare Workers (no native Python deps like `pillow`/`pypdf`).
-2. On the backend, set `CORS_ORIGINS` to include your Workers domain,
-   e.g. `https://kyc-automation.<account>.workers.dev`.
-3. Edit `src/lib/api.ts` and replace the `PROD_BACKEND_URL` constant
-   with the deployed backend origin (no trailing slash). The URL is
-   hardcoded in source on purpose — no Cloudflare env var needed.
-4. Use these commands in the Cloudflare "Create a Worker" form:
-   - **Build command:** `npm run build`
-   - **Deploy command:** `npx wrangler deploy`
-
-   (We use npm + `package-lock.json` for Cloudflare. `bun.lockb` was
-   removed because Cloudflare's Bun 1.2.x cannot read the old binary
-   lockfile format under `--frozen-lockfile`.)
-
-Local dev keeps using Vite's `/api` proxy to `http://localhost:8000`
-automatically; the hardcoded URL is only used in production builds.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+UI scaffolding may reference [Lovable](https://lovable.dev) tooling; day-to-day development is standard git + local IDE as above.
