@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -13,6 +14,7 @@ from app.db.session import db_session_maker
 from app.db.submissions import create_kyc_submission
 from app.schemas import AttachedDocument, ProcessResponse
 from app.services.pipeline import run_pipeline
+from app.services.s3_storage import upload_submission_files
 
 logger = logging.getLogger(__name__)
 
@@ -49,22 +51,46 @@ async def process_kyc(
         total_payload / (1024 * 1024),
     )
 
+    maker = db_session_maker()
+    submission_id_uuid = uuid.uuid4()
+    attached_documents: list[AttachedDocument] = []
+
+    if uploads:
+        if not settings.s3_ready():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Object storage is not configured. "
+                    "Set S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY_ID, and "
+                    "S3_SECRET_ACCESS_KEY (and optionally S3_REGION)."
+                ),
+            )
+        if maker is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Database is required when uploading documents "
+                    "(submissions authorize downloads against saved metadata). "
+                    "Configure Postgres / DATABASE_PASSWORD as for History."
+                ),
+            )
+        attached_documents = await upload_submission_files(
+            settings,
+            submission_id_uuid,
+            uploads,
+        )
+
     pipeline_started = time.perf_counter()
     rows = await run_pipeline(company, uploads)
     duration_ms = int((time.perf_counter() - pipeline_started) * 1000)
 
-    attached_documents = [
-        AttachedDocument(filename=fn, size_bytes=len(raw), content_type=ctype)
-        for fn, raw, ctype in uploads
-    ]
-
     submission_id_out: str | None = None
     saved_at_out: datetime | None = None
-    maker = db_session_maker()
     if maker is not None:
         async with maker() as db_session:
             record = await create_kyc_submission(
                 db_session,
+                submission_id=submission_id_uuid,
                 company_name=company,
                 rows=rows,
                 attached_documents=attached_documents,
@@ -79,4 +105,5 @@ async def process_kyc(
         submission_id=submission_id_out,
         saved_at=saved_at_out,
         duration_ms=duration_ms,
+        attached_documents=attached_documents,
     )

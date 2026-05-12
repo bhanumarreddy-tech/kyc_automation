@@ -14,6 +14,7 @@ from app.schemas import AttachedDocument, KYCRow
 async def create_kyc_submission(
     session: AsyncSession,
     *,
+    submission_id: UUID,
     company_name: str,
     rows: list[KYCRow],
     attached_documents: list[AttachedDocument],
@@ -26,6 +27,7 @@ async def create_kyc_submission(
         else None
     )
     record = KYCSubmission(
+        id=submission_id,
         company_name=company_name,
         rows=payload,
         document_filenames=doc_meta,

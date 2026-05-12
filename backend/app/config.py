@@ -96,6 +96,20 @@ class Settings:
     # After SDK retries, quota/overload can still surface; extra backoff rounds.
     overload_extra_attempts: int = 3
     overload_base_delay_seconds: float = 10.0
+    # S3-compatible uploads (optional; required when users attach files — see S3_* env vars).
+    s3_endpoint_url: str | None = None
+    s3_region: str = "us-east-1"
+    s3_bucket: str | None = None
+    s3_access_key_id: str | None = None
+    s3_secret_access_key: str | None = None
+
+    def s3_ready(self) -> bool:
+        return bool(
+            self.s3_endpoint_url
+            and self.s3_bucket
+            and self.s3_access_key_id
+            and self.s3_secret_access_key
+        )
 
 
 def _parse_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -148,6 +162,18 @@ def get_settings() -> Settings:
     model_raw = os.environ.get("GEMINI_MODEL", "").strip()
     model = model_raw if model_raw else DEFAULT_GEMINI_MODEL
     database_url = _resolve_database_url()
+    s3_endpoint = os.environ.get("S3_ENDPOINT_URL", "").strip() or None
+    s3_region_raw = os.environ.get("S3_REGION", "").strip().lower()
+    # Boto expects a concrete region string; "auto" is common from providers — use stable default for signing.
+    s3_region = (
+        os.environ.get("S3_REGION", "").strip()
+        if s3_region_raw and s3_region_raw != "auto"
+        else "us-east-1"
+    )
+    s3_bucket = os.environ.get("S3_BUCKET", "").strip() or None
+    s3_access = os.environ.get("S3_ACCESS_KEY_ID", "").strip() or None
+    s3_secret = os.environ.get("S3_SECRET_ACCESS_KEY", "").strip() or None
+
     return Settings(
         gemini_api_key=api_key,
         gemini_model=model,
@@ -165,4 +191,9 @@ def get_settings() -> Settings:
         overload_base_delay_seconds=_parse_float(
             "GEMINI_OVERLOAD_BASE_DELAY_SECONDS", 10.0, minimum=1.0
         ),
+        s3_endpoint_url=s3_endpoint,
+        s3_region=s3_region if s3_region else "us-east-1",
+        s3_bucket=s3_bucket,
+        s3_access_key_id=s3_access,
+        s3_secret_access_key=s3_secret,
     )

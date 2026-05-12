@@ -27,6 +27,31 @@ interface AttachedDocumentItem {
   filename: string;
   sizeBytes?: number | null;
   contentType?: string;
+  objectKey?: string | null;
+}
+
+function attachmentDownloadUrl(submissionId: string, objectKey: string): string {
+  const q = new URLSearchParams({ objectKey });
+  return apiUrl(`/api/history/${encodeURIComponent(submissionId)}/attachments/download?${q.toString()}`);
+}
+
+function AttachmentNameLink(props: {
+  submissionId: string;
+  doc: AttachedDocumentItem;
+  className?: string;
+}) {
+  const { submissionId, doc, className } = props;
+  if (!doc.objectKey) {
+    return <span className={className}>{doc.filename}</span>;
+  }
+  return (
+    <a
+      href={attachmentDownloadUrl(submissionId, doc.objectKey)}
+      className={`text-primary underline-offset-4 hover:underline font-medium ${className ?? ""}`}
+    >
+      {doc.filename}
+    </a>
+  );
 }
 
 interface HistoryListItem {
@@ -74,6 +99,10 @@ export default function KYCAutomation() {
   const [historyRunMeta, setHistoryRunMeta] = useState<{
     attachedDocuments: AttachedDocumentItem[];
     durationMs: number | null;
+  } | null>(null);
+  const [completedRunDownloads, setCompletedRunDownloads] = useState<{
+    submissionId: string;
+    documents: AttachedDocumentItem[];
   } | null>(null);
 
   useEffect(() => {
@@ -258,6 +287,7 @@ export default function KYCAutomation() {
     }
 
     setStep("processing");
+    setCompletedRunDownloads(null);
 
     try {
       const formData = new FormData();
@@ -280,6 +310,7 @@ export default function KYCAutomation() {
         rows: KYCRow[];
         submissionId?: string;
         durationMs?: number | null;
+        attachedDocuments?: AttachedDocumentItem[];
       };
       if (!data?.rows || !Array.isArray(data.rows)) {
         throw new Error("Backend returned an invalid response");
@@ -287,6 +318,20 @@ export default function KYCAutomation() {
 
       setRows(data.rows);
       setStep("results");
+
+      if (
+        typeof data.submissionId === "string" &&
+        data.submissionId.length > 0 &&
+        Array.isArray(data.attachedDocuments) &&
+        data.attachedDocuments.length > 0
+      ) {
+        setCompletedRunDownloads({
+          submissionId: data.submissionId,
+          documents: data.attachedDocuments,
+        });
+      } else {
+        setCompletedRunDownloads(null);
+      }
 
       const durationLabel =
         typeof data.durationMs === "number" && !Number.isNaN(data.durationMs)
@@ -315,6 +360,7 @@ export default function KYCAutomation() {
     setCompanyName("");
     setFiles([]);
     setRows([]);
+    setCompletedRunDownloads(null);
   };
 
   const handleRowChange = (serialNo: number, updates: Partial<KYCRow>) => {
@@ -472,12 +518,41 @@ export default function KYCAutomation() {
             )}
 
             {step === "results" && (
-          <ResultsTable
-            companyName={companyName}
-            rows={rows}
-            onReset={handleReset}
-            onRowChange={handleRowChange}
-          />
+          <div className="space-y-4">
+            {completedRunDownloads && completedRunDownloads.documents.length > 0 && (
+              <div className="rounded-md border bg-muted/30 p-4 text-sm space-y-2">
+                <div className="text-muted-foreground text-xs uppercase tracking-wide">
+                  Stored uploads (click to download)
+                </div>
+                <ul className="space-y-2">
+                  {completedRunDownloads.documents.map((doc, idx) => (
+                    <li
+                      key={`${doc.objectKey ?? doc.filename}-${idx}`}
+                      className="flex flex-wrap items-center gap-2 p-2 bg-background rounded-md border"
+                    >
+                      <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <AttachmentNameLink
+                        submissionId={completedRunDownloads.submissionId}
+                        doc={doc}
+                        className="flex-1 min-w-0 truncate text-left"
+                      />
+                      {typeof doc.sizeBytes === "number" && doc.sizeBytes >= 0 && (
+                        <span className="text-xs text-muted-foreground whitespace-nowrap">
+                          {(doc.sizeBytes / 1024 / 1024).toFixed(2)} MB
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <ResultsTable
+              companyName={companyName}
+              rows={rows}
+              onReset={handleReset}
+              onRowChange={handleRowChange}
+            />
+          </div>
             )}
           </TabsContent>
 
@@ -518,10 +593,14 @@ export default function KYCAutomation() {
                           {historyRunMeta.attachedDocuments.map((doc, idx) => (
                             <li
                               key={`${doc.filename}-${idx}`}
-                              className="flex flex-wrap items-center gap-2 p-2 bg-background rounded-md border"
+                              className="flex flex-wrap items-center gap-x-3 gap-y-2 p-2 bg-background rounded-md border"
                             >
                               <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-                              <span className="flex-1 min-w-0 truncate">{doc.filename}</span>
+                              <AttachmentNameLink
+                                submissionId={historyDetailId}
+                                doc={doc}
+                                className="flex-1 min-w-0 truncate text-left"
+                              />
                               {typeof doc.sizeBytes === "number" && doc.sizeBytes >= 0 && (
                                 <span className="text-xs text-muted-foreground whitespace-nowrap">
                                   {(doc.sizeBytes / 1024 / 1024).toFixed(2)} MB
@@ -578,10 +657,6 @@ export default function KYCAutomation() {
                       <TableBody>
                         {historyItems.map((item) => {
                           const docs = item.attachedDocuments ?? [];
-                          const docSummary =
-                            docs.length === 0
-                              ? "None"
-                              : docs.map((d) => d.filename).join(", ");
                           return (
                             <TableRow key={item.submissionId}>
                               <TableCell className="font-medium max-w-[180px]">
@@ -592,12 +667,32 @@ export default function KYCAutomation() {
                                   {formatDurationMs(item.durationMs)}
                                 </div>
                               </TableCell>
-                              <TableCell className="text-muted-foreground max-w-[220px] lg:max-w-[320px]">
-                                <span className="block truncate text-foreground/90" title={docSummary}>
+                            <TableCell className="text-muted-foreground max-w-[220px] lg:max-w-[320px]">
+                                <span className="block truncate">
                                   {docs.length === 0 ? (
                                     <span className="text-muted-foreground">None</span>
                                   ) : (
-                                    docSummary
+                                    <>
+                                      {docs.map((doc, di) => (
+                                        <span key={`${doc.objectKey ?? doc.filename}-${di}`}>
+                                          {di > 0 ? ", " : null}
+                                          {doc.objectKey ? (
+                                            <AttachmentNameLink
+                                              submissionId={item.submissionId}
+                                              doc={doc}
+                                              className="truncate inline-block max-w-full align-bottom"
+                                            />
+                                          ) : (
+                                            <span
+                                              title={doc.filename}
+                                              className="text-foreground/90"
+                                            >
+                                              {doc.filename}
+                                            </span>
+                                          )}
+                                        </span>
+                                      ))}
+                                    </>
                                   )}
                                 </span>
                               </TableCell>

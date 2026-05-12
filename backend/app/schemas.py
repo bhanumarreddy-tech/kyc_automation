@@ -52,6 +52,7 @@ class AttachedDocument(BaseModel):
     filename: str
     size_bytes: int | None = Field(default=None, alias="sizeBytes")
     content_type: str = Field(default="", alias="contentType")
+    object_key: str | None = Field(default=None, alias="objectKey")
 
 
 class ProcessResponse(BaseModel):
@@ -61,6 +62,10 @@ class ProcessResponse(BaseModel):
     submission_id: str | None = Field(default=None, alias="submissionId")
     saved_at: datetime | None = Field(default=None, alias="savedAt")
     duration_ms: int | None = Field(default=None, alias="durationMs")
+    attached_documents: list[AttachedDocument] = Field(
+        default_factory=list,
+        alias="attachedDocuments",
+    )
 
 
 def attached_documents_from_stored(raw: list | None) -> list[AttachedDocument]:
