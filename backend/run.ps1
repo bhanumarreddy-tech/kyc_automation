@@ -20,5 +20,12 @@ if (-not (Test-Path ".env")) {
 Remove-Item Env:GEMINI_API_KEY -ErrorAction SilentlyContinue
 Remove-Item Env:GOOGLE_API_KEY -ErrorAction SilentlyContinue
 
-Write-Host "Starting FastAPI on http://127.0.0.1:8000 (Ctrl+C to stop)" -ForegroundColor Green
-& ".\.venv\Scripts\python.exe" -m uvicorn app.main:app --reload --port 8000 --host 127.0.0.1
+$port = 8000
+if ($env:PORT -match '^[0-9]+$') {
+    $port = [int]$env:PORT
+} elseif ($env:PORT -and $env:PORT -notmatch '^[0-9]+$') {
+    Write-Warning "Ignoring invalid PORT (use digits only, e.g. 8000; bash-style PORT syntax is not expanded in PowerShell). Using $port."
+}
+
+Write-Host "Starting FastAPI on http://127.0.0.1:$port (Ctrl+C to stop)" -ForegroundColor Green
+& ".\.venv\Scripts\python.exe" -m uvicorn app.main:app --reload --port $port --host 127.0.0.1
