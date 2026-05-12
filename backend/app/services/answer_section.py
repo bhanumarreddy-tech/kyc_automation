@@ -1,6 +1,7 @@
 """Per-section "answer with web search" Claude call.
 
-For each KYC section we make a single Claude call that:
+For each KYC section we make one or more Claude calls (initial answer plus
+optional schema-repair turns) that:
 
 * Registers the configured server-side web search tool (default
   ``web_search_20260209`` with dynamic filtering for Opus 4.7 / Sonnet 4.6;
@@ -21,6 +22,15 @@ from app.services.claude_client import get_client, parse_json_response
 
 logger = logging.getLogger(__name__)
 
+# Total attempts (initial + repair turns) when the model omits ``items`` or
+# returns an empty section payload.
+ANSWER_SCHEMA_MAX_ATTEMPTS = 3
+
+DECLARATIONS_NOT_PUBLIC_MSG = (
+    "Not available from public sources — declarations, consents, and signed "
+    "confirmations are not discoverable via web search and must be supplied "
+    "by the applicant (e.g. signed forms or direct attestation)."
+)
 
 _SYSTEM_PROMPT = (
     "You are a senior KYC / KYB analyst at a commercial bank. For each "
@@ -107,6 +117,23 @@ _RESPONSE_FORMAT_INSTRUCTIONS = (
 )
 
 
+def _repair_schema_user_message(
+    num_questions: int, serial_nos: list[int]
+) -> str:
+    serial_part = ", ".join(str(n) for n in serial_nos)
+    return (
+        "Your previous reply did not include a valid JSON payload for this "
+        "section. Respond with ONLY one JSON object and nothing else (no "
+        "markdown fences, no commentary). The object MUST have a top-level "
+        f'key \"items\" whose value is an array of exactly {num_questions} '
+        "objects — one per question, in any order. Each object MUST contain:\n"
+        '  \"serial_no\": <integer>,\n'
+        '  \"answer\": <string>,\n'
+        '  \"sources\": [ { \"title\": <string>, \"url\": <string> }, ... ]\n'
+        f"Use these serial_no values and no others: {serial_part}."
+    )
+
+
 @dataclass
 class AnsweredQuestion:
     serial_no: int
@@ -188,13 +215,135 @@ def _count_web_searches(response: object) -> int:
     )
 
 
+def _log_answer_usage(section_no: int, response: object) -> None:
+    usage = getattr(response, "usage", None)
+    web_search_calls = _count_web_searches(response)
+    content_blocks = getattr(response, "content", []) or []
+    logger.info(
+        "section %d answer usage: input=%s, output=%s, stop_reason=%s, "
+        "web_searches=%d, blocks=[%s]",
+        section_no,
+        getattr(usage, "input_tokens", None) if usage is not None else None,
+        getattr(usage, "output_tokens", None) if usage is not None else None,
+        getattr(response, "stop_reason", None),
+        web_search_calls,
+        _summarise_blocks(content_blocks),
+    )
+
+
+def _parse_items_to_answered(
+    data: object, questions: list[KYCQuestion]
+) -> list[AnsweredQuestion] | None:
+    """Build per-question answers if *data* is a dict with a usable ``items`` list."""
+    if not isinstance(data, dict):
+        return None
+    items = data.get("items")
+    if not isinstance(items, list) or len(items) == 0:
+        return None
+
+    by_serial: dict[int, AnsweredQuestion] = {}
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            serial_no = int(raw.get("serial_no"))
+        except (TypeError, ValueError):
+            continue
+        answer = str(raw.get("answer") or "").strip()
+        sources_raw = raw.get("sources") or []
+        sources: list[dict[str, str]] = []
+        if isinstance(sources_raw, list):
+            for src in sources_raw:
+                if not isinstance(src, dict):
+                    continue
+                url = str(src.get("url") or "").strip()
+                if not url:
+                    continue
+                title = str(src.get("title") or "").strip() or url
+                sources.append({"title": title, "url": url})
+        by_serial[serial_no] = AnsweredQuestion(
+            serial_no=serial_no,
+            answer=answer,
+            sources=sources,
+        )
+
+    ordered = [
+        by_serial.get(q.serial_no, AnsweredQuestion(q.serial_no, "", []))
+        for q in questions
+    ]
+    if not any(a.answer.strip() for a in ordered):
+        return None
+    return ordered
+
+
+def _try_parse_answer_payload(
+    response: object, questions: list[KYCQuestion]
+) -> list[AnsweredQuestion] | None:
+    try:
+        data = parse_json_response(response)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return _parse_items_to_answered(data, questions)
+
+
+def _apply_declarations_public_notice(
+    section_no: int, results: list[AnsweredQuestion]
+) -> list[AnsweredQuestion]:
+    if section_no != 8:
+        return results
+    out: list[AnsweredQuestion] = []
+    for item in results:
+        if item.answer.strip() == "Not found" or item.answer.strip() == "":
+            out.append(
+                AnsweredQuestion(
+                    serial_no=item.serial_no,
+                    answer=DECLARATIONS_NOT_PUBLIC_MSG,
+                    sources=[],
+                )
+            )
+        else:
+            out.append(item)
+    return out
+
+
+async def _create_section_answer_response(
+    client: object,
+    settings: Settings,
+    tools: list[dict[str, object]],
+    messages: list[dict[str, object]],
+    section_no: int,
+) -> object:
+    """Run messages.create with pause_turn continuation; mutates *messages*."""
+    max_continuations = 4
+    response = None
+    for attempt in range(max_continuations + 1):
+        response = await client.messages.create(
+            model=settings.anthropic_model,
+            max_tokens=4096,
+            system=_SYSTEM_PROMPT,
+            tools=tools,
+            messages=messages,
+        )
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason != "pause_turn":
+            return response
+
+        logger.info(
+            "section %d hit pause_turn (attempt %d), continuing turn",
+            section_no,
+            attempt + 1,
+        )
+        messages.append({"role": "assistant", "content": response.content})
+    return response
+
+
 async def answer_section(
     company: str,
     section_no: int,
     section_name: str,
     questions: list[KYCQuestion],
 ) -> list[AnsweredQuestion]:
-    """Make one Claude call for a section and return the parsed answers."""
+    """Run the answer phase for a section (with optional schema-repair retries)."""
 
     settings = get_settings()
     client = get_client()
@@ -226,23 +375,12 @@ async def answer_section(
     messages: list[dict[str, object]] = [
         {"role": "user", "content": user_message},
     ]
+    serial_nos = [q.serial_no for q in questions]
 
-    # Loop to handle the documented pause_turn flow: long server-tool turns
-    # may be paused by Anthropic and must be resubmitted as-is for the model
-    # to continue. Cap the loop defensively so a stuck turn can't spin.
-    max_continuations = 4
-    response = None
-    for attempt in range(max_continuations + 1):
+    for schema_attempt in range(ANSWER_SCHEMA_MAX_ATTEMPTS):
         try:
-            response = await client.messages.create(
-                model=settings.anthropic_model,
-                # JSON for a full section can be long (multi-line answers,
-                # many source URLs). 4096 keeps headroom while staying below
-                # typical max-output caps.
-                max_tokens=4096,
-                system=_SYSTEM_PROMPT,
-                tools=tools,
-                messages=messages,
+            response = await _create_section_answer_response(
+                client, settings, tools, messages, section_no
             )
         except Exception as exc:  # noqa: BLE001 - surface any LLM failure as empty section
             logger.exception(
@@ -250,95 +388,55 @@ async def answer_section(
             )
             return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
 
-        stop_reason = getattr(response, "stop_reason", None)
-        if stop_reason != "pause_turn":
+        _log_answer_usage(section_no, response)
+        content_blocks = getattr(response, "content", []) or []
+
+        if getattr(response, "stop_reason", None) == "tool_use":
+            # The model emitted a client-style tool_use block we can't service
+            # (we only register server tools). This is almost always a sign that
+            # the org doesn't have web_search enabled in the Claude Console, so
+            # the API silently demoted the server tool to a client tool. Log
+            # the offending tool name(s) so the cause is obvious in the logs.
+            client_tool_names = sorted(
+                {
+                    str(getattr(b, "name", "") or "?")
+                    for b in content_blocks
+                    if getattr(b, "type", None) == "tool_use"
+                }
+            )
+            logger.warning(
+                "section %d response stopped on a client tool_use call (%s); "
+                "web_search may not be enabled for this Anthropic org. "
+                "Returning empty answers for this section.",
+                section_no,
+                ", ".join(client_tool_names) or "<unknown>",
+            )
+            return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
+
+        parsed = _try_parse_answer_payload(response, questions)
+        if parsed is not None:
+            return _apply_declarations_public_notice(section_no, parsed)
+
+        logger.warning(
+            "Answer response for section %d missing valid 'items' or empty "
+            "payload (schema attempt %d/%d)",
+            section_no,
+            schema_attempt + 1,
+            ANSWER_SCHEMA_MAX_ATTEMPTS,
+        )
+        if schema_attempt + 1 >= ANSWER_SCHEMA_MAX_ATTEMPTS:
             break
 
-        logger.info(
-            "section %d hit pause_turn (attempt %d), continuing turn",
-            section_no,
-            attempt + 1,
-        )
         messages.append({"role": "assistant", "content": response.content})
-
-    usage = getattr(response, "usage", None)
-    web_search_calls = _count_web_searches(response)
-    content_blocks = getattr(response, "content", []) or []
-    logger.info(
-        "section %d answer usage: input=%s, output=%s, stop_reason=%s, "
-        "web_searches=%d, blocks=[%s]",
-        section_no,
-        getattr(usage, "input_tokens", None) if usage is not None else None,
-        getattr(usage, "output_tokens", None) if usage is not None else None,
-        getattr(response, "stop_reason", None),
-        web_search_calls,
-        _summarise_blocks(content_blocks),
-    )
-
-    if getattr(response, "stop_reason", None) == "tool_use":
-        # The model emitted a client-style tool_use block we can't service
-        # (we only register server tools). This is almost always a sign that
-        # the org doesn't have web_search enabled in the Claude Console, so
-        # the API silently demoted the server tool to a client tool. Log
-        # the offending tool name(s) so the cause is obvious in the logs.
-        client_tool_names = sorted(
+        messages.append(
             {
-                str(getattr(b, "name", "") or "?")
-                for b in content_blocks
-                if getattr(b, "type", None) == "tool_use"
+                "role": "user",
+                "content": _repair_schema_user_message(len(questions), serial_nos),
             }
         )
-        logger.warning(
-            "section %d response stopped on a client tool_use call (%s); "
-            "web_search may not be enabled for this Anthropic org. "
-            "Returning empty answers for this section.",
-            section_no,
-            ", ".join(client_tool_names) or "<unknown>",
-        )
-        return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
 
-    try:
-        data = parse_json_response(response)
-    except (json.JSONDecodeError, ValueError):
-        logger.warning(
-            "Could not parse JSON from answer call for section %d", section_no
-        )
-        return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
-
-    items = data.get("items") if isinstance(data, dict) else None
-    if not isinstance(items, list):
-        logger.warning(
-            "Answer response for section %d missing 'items' list", section_no
-        )
-        return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
-
-    by_serial: dict[int, AnsweredQuestion] = {}
-    for raw in items:
-        if not isinstance(raw, dict):
-            continue
-        try:
-            serial_no = int(raw.get("serial_no"))
-        except (TypeError, ValueError):
-            continue
-        answer = str(raw.get("answer") or "").strip()
-        sources_raw = raw.get("sources") or []
-        sources: list[dict[str, str]] = []
-        if isinstance(sources_raw, list):
-            for src in sources_raw:
-                if not isinstance(src, dict):
-                    continue
-                url = str(src.get("url") or "").strip()
-                if not url:
-                    continue
-                title = str(src.get("title") or "").strip() or url
-                sources.append({"title": title, "url": url})
-        by_serial[serial_no] = AnsweredQuestion(
-            serial_no=serial_no,
-            answer=answer,
-            sources=sources,
-        )
-
-    return [
-        by_serial.get(q.serial_no, AnsweredQuestion(q.serial_no, "", []))
-        for q in questions
-    ]
+    logger.warning(
+        "section %d: exhausted answer schema retries; returning empty rows",
+        section_no,
+    )
+    return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
