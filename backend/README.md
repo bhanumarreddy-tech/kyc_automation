@@ -54,7 +54,7 @@ See `.env.example`. Recognised variables:
 | `GEMINI_API_KEY`                 | _(required)_                                    | Google AI Studio API key |
 | `GOOGLE_API_KEY`                 | —                                               | Alias for `GEMINI_API_KEY` |
 | `GEMINI_MODEL`                   | `gemini-3.1-flash-preview`                      | Override model ID |
-| `MAX_FILE_MB`                    | `20`                                            | Per-file upload limit |
+| `MAX_FILE_MB`                    | `50`                                            | Per-file upload limit |
 | `GEMINI_OVERLOAD_EXTRA_ATTEMPTS` | `3`                                             | Extra full retries after backoff on transient errors |
 | `GEMINI_OVERLOAD_BASE_DELAY_SECONDS` | `10`                                        | Base delay (seconds) for overload backoff |
 | `CORS_ORIGINS`                   | `http://localhost:8080,http://localhost:5173,…` | Comma-separated allow-list |

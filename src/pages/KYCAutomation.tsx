@@ -259,7 +259,7 @@ export default function KYCAutomation() {
                       {isDragging ? "Drop files here" : "Click to upload or drag and drop"}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      PDF, JPG, PNG, DOC, DOCX (max 20MB each)
+                      PDF, JPG, PNG, DOC, DOCX (max 50MB each)
                     </p>
                   </label>
                 </div>

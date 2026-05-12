@@ -100,7 +100,7 @@ def get_settings() -> Settings:
     return Settings(
         gemini_api_key=api_key,
         gemini_model=model,
-        max_file_mb=_parse_int("MAX_FILE_MB", 20),
+        max_file_mb=_parse_int("MAX_FILE_MB", 50),
         log_level=_normalize_log_level(os.environ.get("LOG_LEVEL")),
         cors_origins=_parse_origins(os.environ.get("CORS_ORIGINS")),
         answer_concurrency=_parse_int("ANSWER_CONCURRENCY", 1),
