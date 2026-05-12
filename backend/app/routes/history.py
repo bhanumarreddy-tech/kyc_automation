@@ -15,6 +15,7 @@ from app.schemas import (
     HistoryListItem,
     KYCRow,
     attached_documents_from_stored,
+    history_metrics_from_rows_json,
 )
 from app.services.s3_storage import key_belongs_to_submission, presigned_download_url
 
@@ -33,17 +34,22 @@ async def list_history(
     async with maker() as session:
         records = await list_kyc_submissions(session, limit=limit, offset=offset)
 
-    return [
-        HistoryListItem(
-            submission_id=str(r.id),
-            company_name=r.company_name,
-            created_at=r.created_at,
-            document_count=len(r.document_filenames or []),
-            attached_documents=attached_documents_from_stored(r.document_filenames),
-            duration_ms=r.duration_ms,
+    items: list[HistoryListItem] = []
+    for r in records:
+        completion_pct, needs_review_n = history_metrics_from_rows_json(r.rows)
+        items.append(
+            HistoryListItem(
+                submission_id=str(r.id),
+                company_name=r.company_name,
+                created_at=r.created_at,
+                document_count=len(r.document_filenames or []),
+                attached_documents=attached_documents_from_stored(r.document_filenames),
+                duration_ms=r.duration_ms,
+                completion_percent=completion_pct,
+                needs_review_count=needs_review_n,
+            )
         )
-        for r in records
-    ]
+    return items
 
 
 @router.get(

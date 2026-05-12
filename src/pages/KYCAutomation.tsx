@@ -61,6 +61,8 @@ interface HistoryListItem {
   documentCount: number;
   attachedDocuments?: AttachedDocumentItem[];
   durationMs?: number | null;
+  completionPercent?: number;
+  needsReviewCount?: number;
 }
 
 function formatDurationMs(ms: number | null | undefined): string {
@@ -648,6 +650,12 @@ export default function KYCAutomation() {
                         <TableRow>
                           <TableHead>Client</TableHead>
                           <TableHead className="min-w-[140px] max-w-[260px]">Documents</TableHead>
+                          <TableHead className="text-right whitespace-nowrap w-[104px]">
+                            Completion
+                          </TableHead>
+                          <TableHead className="text-right whitespace-nowrap w-[118px]">
+                            Needs review
+                          </TableHead>
                           <TableHead className="whitespace-nowrap hidden md:table-cell">
                             Duration
                           </TableHead>
@@ -664,8 +672,23 @@ export default function KYCAutomation() {
                                 <div className="truncate" title={item.companyName}>
                                   {item.companyName}
                                 </div>
-                                <div className="md:hidden text-xs text-muted-foreground mt-1">
-                                  {formatDurationMs(item.durationMs)}
+                                <div className="md:hidden text-xs text-muted-foreground mt-1 flex flex-wrap gap-x-2 gap-y-0.5">
+                                  <span>{formatDurationMs(item.durationMs)}</span>
+                                  {typeof item.completionPercent === "number" ? (
+                                    <span>{item.completionPercent}% complete</span>
+                                  ) : null}
+                                  {typeof item.needsReviewCount === "number" ? (
+                                    <span
+                                      className={
+                                        item.needsReviewCount > 0
+                                          ? "text-amber-700 dark:text-amber-400"
+                                          : ""
+                                      }
+                                    >
+                                      {item.needsReviewCount} review
+                                      {item.needsReviewCount === 1 ? "" : "s"}
+                                    </span>
+                                  ) : null}
                                 </div>
                               </TableCell>
                             <TableCell className="text-muted-foreground max-w-[220px] lg:max-w-[320px]">
@@ -695,6 +718,31 @@ export default function KYCAutomation() {
                                       ))}
                                     </>
                                   )}
+                                </span>
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums align-top">
+                                <span title="Answered vs total questions">
+                                  {typeof item.completionPercent === "number"
+                                    ? `${item.completionPercent}%`
+                                    : "—"}
+                                </span>
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums align-top">
+                                <span
+                                  title={
+                                    (item.needsReviewCount ?? 0) > 0
+                                      ? "Missing answers or AI validation No"
+                                      : "Nothing flagged"
+                                  }
+                                  className={
+                                    (item.needsReviewCount ?? 0) > 0
+                                      ? "text-amber-700 dark:text-amber-400 font-medium"
+                                      : "text-muted-foreground"
+                                  }
+                                >
+                                  {typeof item.needsReviewCount === "number"
+                                    ? item.needsReviewCount
+                                    : "—"}
                                 </span>
                               </TableCell>
                               <TableCell className="hidden md:table-cell text-muted-foreground whitespace-nowrap">

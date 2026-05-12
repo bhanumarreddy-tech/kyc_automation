@@ -73,6 +73,27 @@ class ProcessResponse(BaseModel):
     )
 
 
+def history_metrics_from_rows_json(rows: list) -> tuple[int, int]:
+    """Match Results UI/KYC stats: completion % answered, review = missing answers or validation ``No``."""
+
+    def _answered(row: dict) -> bool:
+        a = str(row.get("answer", "") or "").strip().lower()
+        return bool(a and a != "not found")
+
+    def _needs_review(row: dict) -> bool:
+        if not _answered(row):
+            return True
+        return row.get("validation") == "No"
+
+    total = len(rows)
+    if total == 0:
+        return 0, 0
+    answered_n = sum(1 for item in rows if isinstance(item, dict) and _answered(item))
+    review_n = sum(1 for item in rows if isinstance(item, dict) and _needs_review(item))
+    completion = round(100 * answered_n / total)
+    return completion, review_n
+
+
 def attached_documents_from_stored(raw: list | None) -> list[AttachedDocument]:
     """Accept legacy JSONB values: list[str] or list[object]."""
     if not raw:
@@ -98,6 +119,8 @@ class HistoryListItem(BaseModel):
         alias="attachedDocuments",
     )
     duration_ms: int | None = Field(default=None, alias="durationMs")
+    completion_percent: int = Field(default=0, alias="completionPercent")
+    needs_review_count: int = Field(default=0, alias="needsReviewCount")
 
 
 class HistoryDetailResponse(BaseModel):
