@@ -1,11 +1,9 @@
 /**
  * Hardcoded base URL for the deployed FastAPI backend.
  *
- * Replace this with the real backend origin once the FastAPI service is
- * deployed (Render / Railway / Fly.io / Cloud Run / etc.). No trailing
- * slash.
+ * Points at the Railway-hosted FastAPI service. No trailing slash.
  */
-const PROD_BACKEND_URL = "https://CHANGE_ME.example.com";
+const PROD_BACKEND_URL = "https://kycautomation-production.up.railway.app";
 
 /**
  * Build a fully-qualified API URL.
