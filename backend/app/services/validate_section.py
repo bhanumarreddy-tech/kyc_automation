@@ -1,6 +1,6 @@
-"""Per-section "validate against uploaded documents" Claude call.
+"""Per-section "validate against uploaded documents" Gemini call.
 
-For each KYC section we send Claude the answers produced by
+For each KYC section we send Gemini the answers produced by
 :mod:`app.services.answer_section` together with the user's uploaded
 documents (PDFs and images attached natively, DOCX/other as extracted
 text) and ask whether each answer is supported by the documents. When
@@ -16,14 +16,18 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from google.genai import types
+
 from app.config import get_settings
 from app.questions import KYCQuestion
 from app.services.answer_section import AnsweredQuestion
-from app.services.claude_client import (
+from app.services.gemini_client import (
+    generate_content_with_overload_retry,
     get_client,
-    messages_create_with_overload_retry,
     parse_json_response,
+    user_content_blocks_to_gemini_parts,
 )
+from app.services.gemini_schemas import KYC_VALIDATION_RESPONSE_JSON_SCHEMA
 from app.services.documents import ParsedDocument, text_preview
 
 logger = logging.getLogger(__name__)
@@ -32,13 +36,10 @@ logger = logging.getLogger(__name__)
 _MAX_PDF_BYTES = 8 * 1024 * 1024
 _MAX_IMAGE_BYTES = 4 * 1024 * 1024
 _MAX_TEXT_PREVIEW_CHARS = 6000
-# Hard ceiling on the combined extracted-text payload sent to Claude (across
-# all documents) per validation call. Keeps a single call well below the
-# 30k-token tier limit even with several large PDFs uploaded.
+# Hard ceiling on the combined extracted-text payload sent per validation call.
 _MAX_TOTAL_TEXT_CHARS = 20_000
-# Anthropic prompt caching requires a cacheable block of at least ~1024
-# tokens. ~4 chars per token is a safe rule of thumb -> require ~4500 chars
-# in the stable prefix before bothering to mark it for caching.
+# Legacy Anthropic-style threshold: when prompt caching was enabled we marked a
+# stable prefix only above this size. Gemini ignores ``cache_control`` on blocks.
 _CACHE_MIN_CHARS = 4_500
 
 
@@ -112,10 +113,8 @@ def _build_stable_prefix(
     """Build the per-submission, section-agnostic text block.
 
     This block (company name + extracted document text) is identical across
-    all 8 validation calls in a single submission, which makes it the ideal
-    candidate for Anthropic prompt caching: the first call writes the
-    cache, the remaining 7 read it at ~10% of the input-token cost and a
-    correspondingly lower hit on the per-minute rate limit.
+    all 8 validation calls in a single submission so validation prompts stay
+    structured consistently section to section.
     """
     header = f"Company: {company}\n\nUploaded supporting documents (extracted text):"
     if not text_only_documents:
@@ -171,14 +170,12 @@ def _build_attachments(
     *,
     attach_natively: bool,
 ) -> tuple[list[dict[str, Any]], list[ParsedDocument]]:
-    """Split documents into native Claude content blocks vs. text-only previews.
+    """Split documents into native PDF/image blocks vs. text-only previews.
 
     When ``attach_natively`` is ``False`` (the default, controlled via
     ``VALIDATION_ATTACH_DOCUMENTS``), every document is sent as extracted
     text only. This drastically reduces input-token usage because the same
-    document otherwise gets re-encoded as base64 once per section, which
-    will trivially exceed low rate-limit tiers (e.g. 30k tokens/min on the
-    starter Anthropic plan).
+    document otherwise gets re-encoded as base64 once per section.
     """
     blocks: list[dict[str, Any]] = []
     text_only: list[ParsedDocument] = []
@@ -278,7 +275,7 @@ async def validate_section(
     answers: list[AnsweredQuestion],
     documents: list[ParsedDocument],
 ) -> list[ValidationResult]:
-    """Run the validation Claude call for a single section."""
+    """Run the validation Gemini call for a single section."""
 
     if not documents:
         return _empty_results(questions)
@@ -293,10 +290,9 @@ async def validate_section(
     section_text = _build_section_text(questions, answers)
 
     # The stable prefix (company name + extracted documents) is identical
-    # across all 8 validation calls for a single submission. Marking the last
-    # block of that prefix with cache_control makes Anthropic cache the
-    # whole prefix (including any native PDF/image attachments that come
-    # before it) so the remaining 7 calls read it instead of re-uploading.
+    # across all 8 validation calls for a single submission. ``cache_control``
+    # on the stable text block is retained for logging parity only; Gemini
+    # ignores it when converting blocks to ``types.Part``.
     stable_block: dict[str, Any] = {"type": "text", "text": stable_text}
     cache_enabled = (
         settings.enable_prompt_caching
@@ -315,11 +311,12 @@ async def validate_section(
     # model does not support assistant message prefill"). JSON-only output is
     # still enforced via _RESPONSE_FORMAT_INSTRUCTIONS; parse_json_response
     # extracts the object from the reply.
-    messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
+    gemini_parts = user_content_blocks_to_gemini_parts(user_content)
+    gemini_contents = [types.Content(role="user", parts=gemini_parts)]
 
     logger.info(
         "Validating section %d (%s) for '%s' against %d document(s) "
-        "(%d native attachments, %d text previews, cache=%s)",
+        "(%d native attachments, %d text previews, cache_markers=%s)",
         section_no,
         section_name,
         company,
@@ -330,29 +327,32 @@ async def validate_section(
     )
 
     try:
-        response = await messages_create_with_overload_retry(
+        response = await generate_content_with_overload_retry(
             client,
             settings,
-            model=settings.anthropic_model,
-            max_tokens=2048,
-            system=_SYSTEM_PROMPT,
-            messages=messages,
+            model=settings.gemini_model,
+            contents=gemini_contents,
+            config=types.GenerateContentConfig(
+                system_instruction=_SYSTEM_PROMPT,
+                max_output_tokens=8192,
+                response_mime_type="application/json",
+                response_json_schema=KYC_VALIDATION_RESPONSE_JSON_SCHEMA,
+            ),
         )
     except Exception as exc:  # noqa: BLE001 - surface failure as blank validation
         logger.exception(
-            "Claude validation call failed for section %d: %s", section_no, exc
+            "Gemini validation call failed for section %d: %s", section_no, exc
         )
         return _empty_results(questions)
 
-    usage = getattr(response, "usage", None)
-    if usage is not None:
+    um = getattr(response, "usage_metadata", None)
+    if um is not None:
         logger.info(
-            "section %d usage: input=%s, output=%s, cache_create=%s, cache_read=%s",
+            "section %d usage: prompt=%s, output=%s, cached_content_tokens=%s",
             section_no,
-            getattr(usage, "input_tokens", None),
-            getattr(usage, "output_tokens", None),
-            getattr(usage, "cache_creation_input_tokens", None),
-            getattr(usage, "cache_read_input_tokens", None),
+            getattr(um, "prompt_token_count", None),
+            getattr(um, "candidates_token_count", None),
+            getattr(um, "cached_content_token_count", None),
         )
 
     try:

@@ -10,15 +10,8 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-# Default model for answer + validation calls. Claude Opus 4.7 is the strongest
-# general Claude API model paired with ``web_search_20260209`` (dynamic-filter
-# web search). Override via ANTHROPIC_MODEL when needed.
-DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-7"
-
-# Latest web-search server tool (`web_search_20260209`): uses code-assisted
-# filtering so less raw HTML floods the context than ``web_search_20250305``.
-# Fallback: set WEB_SEARCH_TOOL_TYPE=web_search_20250305 for older stacks.
-DEFAULT_WEB_SEARCH_TOOL_TYPE = "web_search_20260209"
+# Default Gemini model when GEMINI_MODEL is unset (Gemini 3.1 Flash — preview ID).
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-preview"
 
 
 def _parse_origins(raw: str | None) -> list[str]:
@@ -34,27 +27,18 @@ def _parse_origins(raw: str | None) -> list[str]:
 
 @dataclass(frozen=True)
 class Settings:
-    anthropic_api_key: str
-    anthropic_model: str
+    gemini_api_key: str
+    gemini_model: str
     max_file_mb: int
-    max_web_searches: int
-    web_search_tool_type: str
-    web_search_direct_only: bool
     cors_origins: list[str] = field(default_factory=list)
-    # NOTE: Web search consumes large input payloads (worst-case projection per
-    # request scales with MAX_WEB_SEARCHES). Starter tiers need low max_uses
-    # plus sequential answering (ANSWER_INTER_CALL_DELAY_SECONDS).
     answer_concurrency: int = 1
     answer_inter_call_delay_seconds: float = 0.0
     validation_concurrency: int = 2
     validation_attach_documents: bool = False
     enable_prompt_caching: bool = True
-    max_retries: int = 5
-    # After the SDK exhausts ``max_retries`` on a single request, 529 overload
-    # can still surface. Extra waits + full retries help without changing SDK
-    # internals (see ``messages_create_with_overload_retry``).
-    anthropic_overload_extra_attempts: int = 3
-    anthropic_overload_base_delay_seconds: float = 10.0
+    # After SDK retries, quota/overload can still surface; extra backoff rounds.
+    overload_extra_attempts: int = 3
+    overload_base_delay_seconds: float = 10.0
 
 
 def _parse_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -100,20 +84,16 @@ def _parse_bool(name: str, default: bool) -> bool:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    model_raw = os.environ.get("ANTHROPIC_MODEL", "").strip()
-    model = model_raw if model_raw else DEFAULT_ANTHROPIC_MODEL
-    ws_tool_raw = os.environ.get("WEB_SEARCH_TOOL_TYPE", "").strip()
-    web_search_tool_type = ws_tool_raw or DEFAULT_WEB_SEARCH_TOOL_TYPE
+    api_key = (
+        os.environ.get("GEMINI_API_KEY", "").strip()
+        or os.environ.get("GOOGLE_API_KEY", "").strip()
+    )
+    model_raw = os.environ.get("GEMINI_MODEL", "").strip()
+    model = model_raw if model_raw else DEFAULT_GEMINI_MODEL
     return Settings(
-        anthropic_api_key=api_key,
-        anthropic_model=model,
+        gemini_api_key=api_key,
+        gemini_model=model,
         max_file_mb=_parse_int("MAX_FILE_MB", 20),
-        # Typical default for Opus + web_search_20260209; lower to 1 for the
-        # 30k input-tokens/min tier (see deployment notes in .env.example).
-        max_web_searches=_parse_int("MAX_WEB_SEARCHES", 10),
-        web_search_tool_type=web_search_tool_type,
-        web_search_direct_only=_parse_bool("WEB_SEARCH_DIRECT_ONLY", False),
         cors_origins=_parse_origins(os.environ.get("CORS_ORIGINS")),
         answer_concurrency=_parse_int("ANSWER_CONCURRENCY", 1),
         answer_inter_call_delay_seconds=_parse_float(
@@ -122,11 +102,8 @@ def get_settings() -> Settings:
         validation_concurrency=_parse_int("VALIDATION_CONCURRENCY", 2),
         validation_attach_documents=_parse_bool("VALIDATION_ATTACH_DOCUMENTS", False),
         enable_prompt_caching=_parse_bool("ENABLE_PROMPT_CACHING", True),
-        max_retries=_parse_int("MAX_RETRIES", 5),
-        anthropic_overload_extra_attempts=_parse_int_min0(
-            "ANTHROPIC_OVERLOAD_EXTRA_ATTEMPTS", 3
-        ),
-        anthropic_overload_base_delay_seconds=_parse_float(
-            "ANTHROPIC_OVERLOAD_BASE_DELAY_SECONDS", 10.0, minimum=1.0
+        overload_extra_attempts=_parse_int_min0("GEMINI_OVERLOAD_EXTRA_ATTEMPTS", 3),
+        overload_base_delay_seconds=_parse_float(
+            "GEMINI_OVERLOAD_BASE_DELAY_SECONDS", 10.0, minimum=1.0
         ),
     )

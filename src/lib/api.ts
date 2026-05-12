@@ -1,23 +1,55 @@
 /**
- * Hardcoded base URL for the deployed FastAPI backend.
+
+ * Optional: set in `.env.production` / build env when the API lives on another
+
+ * origin. No trailing slash.
+
  *
- * Points at the Railway-hosted FastAPI service. No trailing slash.
+
+ * Examples:
+
+ * - Same-origin (Docker Compose nginx proxy): leave unset → `/api/...`.
+
+ * - Split hosts: `VITE_API_BASE_URL=https://your-api.example.com`
+
  */
-const PROD_BACKEND_URL = "https://kycautomation-production.up.railway.app";
+
+const configuredBackend = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
+
+
 
 /**
+
  * Build a fully-qualified API URL.
+
  *
- * In dev (`vite dev`) this returns a relative path like `/api/process`
- * so Vite's proxy in `vite.config.ts` can forward it to the local
- * FastAPI server on :8000. In a production build it prefixes the path
- * with `PROD_BACKEND_URL` so the deployed SPA can reach the separately
- * hosted backend.
+
+ * - `vite dev`: relative `/api/...` → Vite proxy → localhost:8000.
+
+ * - production: `VITE_API_BASE_URL` if set; otherwise relative `/api/...`
+
+ *   (same browser origin — use with a reverse proxy or CDN routing).
+
  */
+
 export function apiUrl(path: string): string {
+
   const suffix = path.startsWith("/") ? path : `/${path}`;
+
   if (import.meta.env.DEV) {
+
     return suffix;
+
   }
-  return `${PROD_BACKEND_URL.replace(/\/$/, "")}${suffix}`;
+
+  if (configuredBackend && configuredBackend.length > 0) {
+
+    return `${configuredBackend.replace(/\/$/, "")}${suffix}`;
+
+  }
+
+  return suffix;
+
 }
+
+

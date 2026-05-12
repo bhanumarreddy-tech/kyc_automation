@@ -2,9 +2,8 @@
 
 For each of the 8 sections we make:
 
-1. one *answer* Claude call (with the ``web_search_20260209`` server search
-   tool by default; override via ``WEB_SEARCH_TOOL_TYPE``), and
-2. one *validation* Claude call (with the user's documents attached).
+1. one *answer* Gemini call with Google Search grounding, and
+2. one *validation* Gemini call with the user's documents attached.
 
 The 8 answer calls run concurrently via :func:`asyncio.gather`. The 8
 validation calls then run concurrently as well. Results are merged into
@@ -39,8 +38,7 @@ async def run_pipeline(
     parsed_docs = await parse_documents(uploads)
     logger.info("Parsed %d uploaded document(s)", len(parsed_docs))
 
-    # Throttle concurrency so we stay under the Anthropic per-minute input-token
-    # rate limit (e.g. 30k tokens/min on the starter tier). Both phases use
+    # Throttle concurrency so we stay under Gemini API quota. Both phases use
     # independent semaphores configured via env (ANSWER_CONCURRENCY,
     # VALIDATION_CONCURRENCY).
     answer_sem = asyncio.Semaphore(settings.answer_concurrency)
@@ -142,4 +140,9 @@ async def run_pipeline(
             )
         )
 
+    logger.info(
+        "Pipeline finished for company=%r: %d questionnaire rows returned",
+        company,
+        len(rows),
+    )
     return rows

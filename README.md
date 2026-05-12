@@ -1,6 +1,6 @@
 # KYC Automation
 
-Prototype stack for **Tiger Analytics KYC automation**: upload company documents and get a populated KYC questionnaire. The **FastAPI** backend runs per-section [Anthropic Claude](https://www.anthropic.com/) calls—one pass for answers (with optional web search) and one for document validation—against PDFs, Word files, and images extracted in-process.
+Prototype stack for **Tiger Analytics KYC automation**: upload company documents and get a populated KYC questionnaire. The **FastAPI** backend runs per-section **[Google Gemini](https://ai.google.dev/)** calls—one pass for answers (with Google Search grounding) and one for document validation—against PDFs, Word files, and images extracted in-process.
 
 ## Repository layout
 
@@ -28,7 +28,7 @@ python -m venv .venv
 # source .venv/bin/activate
 
 pip install -r requirements.txt
-copy .env.example .env   # or: cp .env.example .env — then edit and set ANTHROPIC_API_KEY
+copy .env.example .env   # or: cp .env.example .env — then edit and set GEMINI_API_KEY
 ```
 
 Start the API (CORS defaults allow `http://localhost:8080` and `:5173`):
@@ -39,7 +39,7 @@ uvicorn app.main:app --reload --port 8000
 
 Health check: `GET http://localhost:8000/api/health`
 
-Environment variables are documented in `backend/.env.example`. **`ANTHROPIC_API_KEY`** is required. Tune `MAX_WEB_SEARCHES`, `ANSWER_CONCURRENCY`, and `ANSWER_INTER_CALL_DELAY_SECONDS` for your Anthropic usage tier.
+Environment variables are documented in `backend/.env.example`. **`GEMINI_API_KEY`** (or **`GOOGLE_API_KEY`**) is required. Tune `ANSWER_CONCURRENCY` and `ANSWER_INTER_CALL_DELAY_SECONDS` for your Gemini API quota.
 
 ### 2. Frontend
 
@@ -52,20 +52,37 @@ npm run dev
 
 Vite serves the app on **port 8080** and proxies `/api/*` to `http://localhost:8000`, so the SPA talks to your local FastAPI instance without changing code.
 
-In **production builds**, the client uses the hardcoded backend origin in `src/lib/api.ts` (`PROD_BACKEND_URL`). Change that constant when you deploy the API to a new host.
+In **production builds**, API calls use **`VITE_API_BASE_URL`** when set; otherwise they stay **same-origin** (`/api/...`), which matches the Docker Compose setup below (nginx proxies `/api` to FastAPI).
 
 ## Tech stack
 
 **Frontend:** Vite, React, TypeScript, shadcn-ui, Tailwind CSS, TanStack Query, React Router  
 
-**Backend:** FastAPI, Uvicorn, Anthropic SDK, PyPDF, python-docx, Pillow, Pydantic
+**Backend:** FastAPI, Uvicorn, Google Gemini (`google-genai`), PyPDF, python-docx, Pillow, Pydantic
 
-## Deployment notes
+## Deploy and test (Docker Compose)
 
-- **Frontend (Cloudflare Workers):** The repo includes `wrangler.jsonc` for deploying the built SPA (`dist/`). Typical commands: `npm run build`, then `npx wrangler deploy`.
-- **Backend:** FastAPI cannot run on Cloudflare Workers with the current native dependencies (e.g. Pillow, PyPDF). Host `backend/` on a Python-friendly platform (Railway, Render, Fly.io, Cloud Run, etc.).
-- Set **`CORS_ORIGINS`** on the backend to include your production frontend origin (comma-separated).
-- After deploying the API, update **`PROD_BACKEND_URL`** in `src/lib/api.ts` so production builds target the correct origin (no trailing slash).
+Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose).
+
+1. Put **`GEMINI_API_KEY`** (and any other vars) in **`backend/.env`**.
+2. From the **repository root**:
+
+```sh
+docker compose build
+docker compose up -d
+```
+
+3. Open **`http://localhost:8080`** (UI) — **`http://localhost:8080/api/health`** should return `{"status":"ok"}` via nginx → backend.
+
+4. Logs: `docker compose logs -f`. Stop: `docker compose down`.
+
+For **split deployments** (static UI on one host, API on another), build the frontend with  
+`VITE_API_BASE_URL=https://your-api-host` and set **`CORS_ORIGINS`** on the backend to your UI origin.
+
+## Other deployment notes
+
+- **Frontend (Cloudflare Workers):** The repo includes `wrangler.jsonc`. Typical commands: `npm run build`, then `npx wrangler deploy`. Set **`VITE_API_BASE_URL`** to your public API URL before building.
+- **Backend:** Host `backend/` on a Python-friendly platform (Railway, Render, Fly.io, Cloud Run, etc.). Set **`CORS_ORIGINS`** when the browser talks to the API on a different origin than the SPA.
 
 ## License / project origin
 

@@ -1,13 +1,9 @@
-"""Per-section "answer with web search" Claude call.
+"""Per-section "answer with Google Search grounding" Gemini call.
 
-For each KYC section we make one or more Claude calls (initial answer plus
-optional schema-repair turns) that:
-
-* Registers the configured server-side web search tool (default
-  ``web_search_20260209`` with dynamic filtering for Opus 4.7 / Sonnet 4.6;
-  override via ``WEB_SEARCH_TOOL_TYPE``).
-* Returns a strict JSON object listing the answer and citation links for
-  every question in the section.
+For each KYC section we make one or more Gemini ``generate_content`` calls
+(initial answer plus optional schema-repair turns) that enable the Google Search
+tool and return a strict JSON object listing answers and citation links for
+every question in the section.
 """
 
 from __future__ import annotations
@@ -16,15 +12,28 @@ import json
 import logging
 from dataclasses import dataclass
 
-from app.config import Settings, get_settings
+from google.genai import types
+
+from app.config import get_settings
 from app.questions import KYCQuestion
-from app.services.claude_client import (
+from app.services.gemini_client import (
+    count_grounding_web_queries,
+    extract_text,
+    generate_content_with_overload_retry,
     get_client,
-    messages_create_with_overload_retry,
+    google_search_tools,
     parse_json_response,
+    summarise_response_for_logs,
 )
+from app.services.gemini_schemas import KYC_ANSWER_RESPONSE_JSON_SCHEMA
 
 logger = logging.getLogger(__name__)
+
+
+def _structured_json_with_search_supported(model: str) -> bool:
+    """Gemini 3+ allows JSON schema constrained decoding alongside Google Search."""
+    return "gemini-3" in model.lower()
+
 
 # Total attempts (initial + repair turns) when the model omits ``items`` or
 # returns an empty section payload.
@@ -42,7 +51,7 @@ _SYSTEM_PROMPT = (
     "company that is GROUNDED IN LIVE WEB SOURCES.\n"
     "\n"
     "WEB SEARCH IS MANDATORY:\n"
-    "- You MUST use the web_search tool before answering. Plan your "
+    "- You MUST use the search tool before answering. Plan your "
     "  searches up front: issue one or more queries that together cover "
     "  every question in this section (e.g. 'Best Buy SEC 10-K registered "
     "  address', 'Best Buy CIK number', 'Best Buy executive officers "
@@ -55,12 +64,12 @@ _SYSTEM_PROMPT = (
     "  posts as the sole source for a fact.\n"
     "- Every factual answer (anything other than the exact literals "
     "  \"Not found\" or \"Not relevant\") MUST be supported by at least "
-    "  one web_search result that you actually retrieved this turn, and "
+    "  one search result that you actually retrieved this turn, and "
     "  that URL MUST appear in the 'sources' list for the question. Do "
     "  NOT cite a URL you did not fetch.\n"
     "- Your training-data knowledge is a tie-breaker only: use it to "
     "  disambiguate or sanity-check what the web returned, never as the "
-    "  primary source. If web_search does not surface a fact in this "
+    "  primary source. If search does not surface a fact in this "
     "  turn, run another search rather than falling back to memory.\n"
     "- Two different sentinels — choose correctly:\n"
     "  * Return the exact string \"Not relevant\" (case-sensitive) with "
@@ -172,7 +181,7 @@ def _build_user_message(
         f"Company: {company}\n"
         f"Section {section_no}: {section_name}\n\n"
         f"Answer the following KYC questions about this company. You "
-        f"MUST use the web_search tool to ground every answer in live, "
+        f"MUST use search to ground every answer in live, "
         f"authoritative sources before responding - do not answer from "
         f"memory. Plan a small batch of searches that together cover "
         f"all the questions below (e.g. one query for registry / "
@@ -190,64 +199,21 @@ def _build_user_message(
     )
 
 
-def _summarise_blocks(content: list) -> str:
-    """Compact 'type[:name]' summary of response content blocks for logs."""
-    parts: list[str] = []
-    for block in content or []:
-        block_type = getattr(block, "type", None) or "?"
-        name = getattr(block, "name", None)
-        parts.append(f"{block_type}:{name}" if name else block_type)
-    return ",".join(parts) if parts else "<empty>"
-
-
-def build_web_search_tool(settings: Settings) -> dict[str, object]:
-    """Build the server ``web_search`` tool dict for :meth:`messages.create`."""
-    spec: dict[str, object] = {
-        "type": settings.web_search_tool_type,
-        "name": "web_search",
-        "max_uses": settings.max_web_searches,
-    }
-    if settings.web_search_direct_only:
-        # Disables dynamic code-exec filtering path; required for some ZDR
-        # setups per Anthropic server-tools docs.
-        spec["allowed_callers"] = ["direct"]
-    return spec
-
-
-def _count_web_searches(response: object) -> int:
-    """Authoritative web-search count: prefer typed usage, fall back to blocks.
-
-    Per Anthropic docs the canonical count is
-    ``usage.server_tool_use.web_search_requests``; we still cross-check by
-    counting ``server_tool_use`` blocks named ``web_search`` so a mismatch
-    shows up in logs.
-    """
-    usage = getattr(response, "usage", None)
-    server_tool_use = getattr(usage, "server_tool_use", None) if usage else None
-    typed = getattr(server_tool_use, "web_search_requests", None)
-    if isinstance(typed, int):
-        return typed
-    return sum(
-        1
-        for block in (getattr(response, "content", []) or [])
-        if getattr(block, "type", None) == "server_tool_use"
-        and getattr(block, "name", None) == "web_search"
-    )
-
-
-def _log_answer_usage(section_no: int, response: object) -> None:
-    usage = getattr(response, "usage", None)
-    web_search_calls = _count_web_searches(response)
-    content_blocks = getattr(response, "content", []) or []
+def _log_answer_usage(section_no: int, response: types.GenerateContentResponse) -> None:
+    um = getattr(response, "usage_metadata", None)
+    web_queries = count_grounding_web_queries(response)
+    finish = None
+    if response.candidates:
+        finish = getattr(response.candidates[0], "finish_reason", None)
     logger.info(
-        "section %d answer usage: input=%s, output=%s, stop_reason=%s, "
-        "web_searches=%d, blocks=[%s]",
+        "section %d answer usage: prompt_tokens=%s, output_tokens=%s, "
+        "finish_reason=%s, web_queries=%d, detail=[%s]",
         section_no,
-        getattr(usage, "input_tokens", None) if usage is not None else None,
-        getattr(usage, "output_tokens", None) if usage is not None else None,
-        getattr(response, "stop_reason", None),
-        web_search_calls,
-        _summarise_blocks(content_blocks),
+        getattr(um, "prompt_token_count", None) if um is not None else None,
+        getattr(um, "candidates_token_count", None) if um is not None else None,
+        finish,
+        web_queries,
+        summarise_response_for_logs(response),
     )
 
 
@@ -329,39 +295,6 @@ def _apply_declarations_public_notice(
     return out
 
 
-async def _create_section_answer_response(
-    client: object,
-    settings: Settings,
-    tools: list[dict[str, object]],
-    messages: list[dict[str, object]],
-    section_no: int,
-) -> object:
-    """Run messages.create with pause_turn continuation; mutates *messages*."""
-    max_continuations = 4
-    response = None
-    for attempt in range(max_continuations + 1):
-        response = await messages_create_with_overload_retry(
-            client,
-            settings,
-            model=settings.anthropic_model,
-            max_tokens=4096,
-            system=_SYSTEM_PROMPT,
-            tools=tools,
-            messages=messages,
-        )
-        stop_reason = getattr(response, "stop_reason", None)
-        if stop_reason != "pause_turn":
-            return response
-
-        logger.info(
-            "section %d hit pause_turn (attempt %d), continuing turn",
-            section_no,
-            attempt + 1,
-        )
-        messages.append({"role": "assistant", "content": response.content})
-    return response
-
-
 async def answer_section(
     company: str,
     section_no: int,
@@ -376,67 +309,61 @@ async def answer_section(
     user_message = _build_user_message(company, section_no, section_name, questions)
 
     logger.info(
-        "Answering section %d (%s) with %d question(s) for '%s' "
-        "(model=%s, web_search_tool=%s, max_uses=%d, direct_only=%s)",
+        "Answering section %d (%s) with %d question(s) for '%s' (model=%s, "
+        "google_search=on)",
         section_no,
         section_name,
         len(questions),
         company,
-        settings.anthropic_model,
-        settings.web_search_tool_type,
-        settings.max_web_searches,
-        settings.web_search_direct_only,
+        settings.gemini_model,
     )
 
-    tools = [build_web_search_tool(settings)]
-
-    # NOTE: no assistant prefill. With the web_search server tool the model
-    # needs to start its turn with a server_tool_use block, not text. A
-    # prefilled "{" forces the response to begin with a text block and was
-    # observed to make the model either skip web_search entirely or emit a
-    # malformed (client-style) tool_use that the API can't run server-side.
-    # We rely on the JSON instructions in the prompt + parse_json_response's
-    # fallback ("first { ... last }") to recover the JSON payload.
-    messages: list[dict[str, object]] = [
-        {"role": "user", "content": user_message},
+    contents: list[types.Content] = [
+        types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=user_message)],
+        ),
     ]
+
+    # Large sections + many URL sources exceed 4k tokens; 2.5 Flash allows much higher.
+    _cfg: dict = {
+        "system_instruction": _SYSTEM_PROMPT,
+        "tools": google_search_tools(),
+        "max_output_tokens": 32_768,
+    }
+    if _structured_json_with_search_supported(settings.gemini_model):
+        _cfg["response_mime_type"] = "application/json"
+        _cfg["response_json_schema"] = KYC_ANSWER_RESPONSE_JSON_SCHEMA
+    answer_config = types.GenerateContentConfig(**_cfg)
     serial_nos = [q.serial_no for q in questions]
 
     for schema_attempt in range(ANSWER_SCHEMA_MAX_ATTEMPTS):
         try:
-            response = await _create_section_answer_response(
-                client, settings, tools, messages, section_no
+            response = await generate_content_with_overload_retry(
+                client,
+                settings,
+                model=settings.gemini_model,
+                contents=contents,
+                config=answer_config,
             )
         except Exception as exc:  # noqa: BLE001 - surface any LLM failure as empty section
             logger.exception(
-                "Claude answer call failed for section %d: %s", section_no, exc
+                "Gemini answer call failed for section %d: %s", section_no, exc
             )
             return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
 
         _log_answer_usage(section_no, response)
-        content_blocks = getattr(response, "content", []) or []
 
-        if getattr(response, "stop_reason", None) == "tool_use":
-            # The model emitted a client-style tool_use block we can't service
-            # (we only register server tools). This is almost always a sign that
-            # the org doesn't have web_search enabled in the Claude Console, so
-            # the API silently demoted the server tool to a client tool. Log
-            # the offending tool name(s) so the cause is obvious in the logs.
-            client_tool_names = sorted(
-                {
-                    str(getattr(b, "name", "") or "?")
-                    for b in content_blocks
-                    if getattr(b, "type", None) == "tool_use"
-                }
-            )
-            logger.warning(
-                "section %d response stopped on a client tool_use call (%s); "
-                "web_search may not be enabled for this Anthropic org. "
-                "Returning empty answers for this section.",
-                section_no,
-                ", ".join(client_tool_names) or "<unknown>",
-            )
-            return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
+        if response.candidates:
+            fr = response.candidates[0].finish_reason
+            if fr == types.FinishReason.UNEXPECTED_TOOL_CALL:
+                logger.warning(
+                    "section %d: unexpected tool call finish (%s); "
+                    "check Google Search availability for this API key.",
+                    section_no,
+                    fr,
+                )
+                return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
 
         parsed = _try_parse_answer_payload(response, questions)
         if parsed is not None:
@@ -452,12 +379,21 @@ async def answer_section(
         if schema_attempt + 1 >= ANSWER_SCHEMA_MAX_ATTEMPTS:
             break
 
-        messages.append({"role": "assistant", "content": response.content})
-        messages.append(
-            {
-                "role": "user",
-                "content": _repair_schema_user_message(len(questions), serial_nos),
-            }
+        contents.append(
+            types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=extract_text(response))],
+            )
+        )
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(
+                        text=_repair_schema_user_message(len(questions), serial_nos)
+                    )
+                ],
+            )
         )
 
     logger.warning(

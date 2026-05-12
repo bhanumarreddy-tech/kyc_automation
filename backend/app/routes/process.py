@@ -21,10 +21,10 @@ async def process_kyc(
     files: list[UploadFile] | None = File(default=None),
 ) -> ProcessResponse:
     settings = get_settings()
-    if not settings.anthropic_api_key:
+    if not settings.gemini_api_key:
         raise HTTPException(
             status_code=500,
-            detail="ANTHROPIC_API_KEY is not configured on the server",
+            detail="GEMINI_API_KEY is not configured on the server",
         )
 
     company = company_name.strip()

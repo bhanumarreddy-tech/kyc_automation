@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.middleware.request_logging import RequestLoggingMiddleware
 from app.routes import process as process_route
 
 logging.basicConfig(
@@ -27,7 +28,8 @@ app = FastAPI(
     description=(
         "FastAPI service that powers the Tiger Analytics KYC automation prototype. "
         "Accepts company documents and produces a fully populated KYC questionnaire "
-        "by running per-section Claude calls (one for answers, one for document validation)."
+        "by running per-section Gemini calls (one for answers with search grounding, "
+        "one for document validation)."
     ),
     version="0.1.0",
 )
@@ -39,6 +41,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Last added runs first: log full request duration including CORS for every call.
+app.add_middleware(RequestLoggingMiddleware)
 
 
 @app.get("/api/health")

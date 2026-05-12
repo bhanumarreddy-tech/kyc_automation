@@ -2,9 +2,9 @@
 
 Each upload becomes a :class:`ParsedDocument` that exposes both a textual
 preview (used for prompt context) and the bits we need to attach the
-document to a Claude message (raw bytes + media type for PDFs and images).
-DOCX files are converted to plain text because Claude does not natively
-accept .docx attachments.
+document to the LLM (raw bytes + media type for PDFs and images).
+DOCX files are converted to plain text because native .docx attachments are
+not used for validation.
 """
 
 from __future__ import annotations
