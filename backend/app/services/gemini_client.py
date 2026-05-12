@@ -195,7 +195,7 @@ def parse_json_response(
             return parsed_seg
 
     log_blocked_generation(response)
-    logger.warning("Model response did not contain parsable JSON")
+    logger.debug("Model response did not contain parsable JSON")
     logger.debug("Combined text (prefix 4000 chars): %s", combined[:4000])
     raise json.JSONDecodeError("no JSON object decoded", combined, 0)
 

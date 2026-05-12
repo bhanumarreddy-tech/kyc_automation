@@ -219,10 +219,14 @@ export default function KYCAutomation() {
                 <Label htmlFor="companyName">Client Name</Label>
                 <Input
                   id="companyName"
-                  placeholder="Enter company name"
+                  placeholder='e.g. Best Buy Co., Inc. · add NYSE:BBY or jurisdiction if ambiguous'
                   value={companyName}
                   onChange={(e) => setCompanyName(e.target.value)}
                 />
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Web search grounds answers better with the legal name; add exchange:ticker or
+                  country when the name is vague.
+                </p>
               </div>
 
               <div className="space-y-2">

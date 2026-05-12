@@ -308,14 +308,16 @@ async def answer_section(
 
     user_message = _build_user_message(company, section_no, section_name, questions)
 
+    structured = _structured_json_with_search_supported(settings.gemini_model)
     logger.info(
         "Answering section %d (%s) with %d question(s) for '%s' (model=%s, "
-        "google_search=on)",
+        "google_search=on, structured_json_schema=%s)",
         section_no,
         section_name,
         len(questions),
         company,
         settings.gemini_model,
+        structured,
     )
 
     contents: list[types.Content] = [
@@ -336,6 +338,7 @@ async def answer_section(
         _cfg["response_json_schema"] = KYC_ANSWER_RESPONSE_JSON_SCHEMA
     answer_config = types.GenerateContentConfig(**_cfg)
     serial_nos = [q.serial_no for q in questions]
+    last_response: types.GenerateContentResponse | None = None
 
     for schema_attempt in range(ANSWER_SCHEMA_MAX_ATTEMPTS):
         try:
@@ -358,18 +361,20 @@ async def answer_section(
             fr = response.candidates[0].finish_reason
             if fr == types.FinishReason.UNEXPECTED_TOOL_CALL:
                 logger.warning(
-                    "section %d: unexpected tool call finish (%s); "
-                    "check Google Search availability for this API key.",
+                    "section %d (%s): branch=unexpected_tool_finish (%s); "
+                    "Google Search may be unavailable for this API key/model.",
                     section_no,
+                    section_name,
                     fr,
                 )
                 return [AnsweredQuestion(q.serial_no, "", []) for q in questions]
 
+        last_response = response
         parsed = _try_parse_answer_payload(response, questions)
         if parsed is not None:
             return _apply_declarations_public_notice(section_no, parsed)
 
-        logger.warning(
+        logger.debug(
             "Answer response for section %d missing valid 'items' or empty "
             "payload (schema attempt %d/%d)",
             section_no,
@@ -396,8 +401,20 @@ async def answer_section(
             )
         )
 
+    diag = summarise_response_for_logs(last_response) if last_response else "no_response"
+    text_preview_len = (
+        len(extract_text(last_response).strip()) if last_response else 0
+    )
     logger.warning(
-        "section %d: exhausted answer schema retries; returning empty rows",
+        "section %d (%s): exhausted answer schema retries; returning empty rows. "
+        "branch=schema_retries_exhausted last_turn=[%s] answer_text_chars=%d "
+        "structured_json_schema=%s. If last_turn shows finish_reason=OTHER, "
+        "parts=0, or web_queries=0 repeatedly, switch GEMINI_MODEL to a Gemini 3 "
+        "id (see .env.example). Set LOG_LEVEL=DEBUG for parse detail.",
         section_no,
+        section_name,
+        diag,
+        text_preview_len,
+        structured,
     )
     return [AnsweredQuestion(q.serial_no, "", []) for q in questions]

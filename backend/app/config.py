@@ -24,12 +24,19 @@ def _parse_origins(raw: str | None) -> list[str]:
         ]
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
+# Normalize the log level
+def _normalize_log_level(raw: str | None, default: str = "INFO") -> str:
+    if not raw or not raw.strip():
+        return default
+    return raw.strip().upper()
+
 
 @dataclass(frozen=True)
 class Settings:
     gemini_api_key: str
     gemini_model: str
     max_file_mb: int
+    log_level: str = "INFO"
     cors_origins: list[str] = field(default_factory=list)
     answer_concurrency: int = 1
     answer_inter_call_delay_seconds: float = 0.0
@@ -94,6 +101,7 @@ def get_settings() -> Settings:
         gemini_api_key=api_key,
         gemini_model=model,
         max_file_mb=_parse_int("MAX_FILE_MB", 20),
+        log_level=_normalize_log_level(os.environ.get("LOG_LEVEL")),
         cors_origins=_parse_origins(os.environ.get("CORS_ORIGINS")),
         answer_concurrency=_parse_int("ANSWER_CONCURRENCY", 1),
         answer_inter_call_delay_seconds=_parse_float(

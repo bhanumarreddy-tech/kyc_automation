@@ -16,12 +16,12 @@ from app.config import get_settings
 from app.middleware.request_logging import RequestLoggingMiddleware
 from app.routes import process as process_route
 
+settings = get_settings()
+_log_level = getattr(logging, settings.log_level, None)
 logging.basicConfig(
-    level=logging.INFO,
+    level=_log_level if isinstance(_log_level, int) else logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
 )
-
-settings = get_settings()
 
 app = FastAPI(
     title="KYC Automation Backend",
