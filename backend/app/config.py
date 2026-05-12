@@ -85,7 +85,6 @@ def _normalize_log_level(raw: str | None, default: str = "INFO") -> str:
 class Settings:
     gemini_api_key: str
     gemini_model: str
-    max_file_mb: int
     database_url: str | None = None
     log_level: str = "INFO"
     cors_origins: list[str] = field(default_factory=list)
@@ -152,7 +151,6 @@ def get_settings() -> Settings:
     return Settings(
         gemini_api_key=api_key,
         gemini_model=model,
-        max_file_mb=_parse_int("MAX_FILE_MB", 50),
         database_url=database_url,
         log_level=_normalize_log_level(os.environ.get("LOG_LEVEL")),
         cors_origins=_parse_origins(os.environ.get("CORS_ORIGINS")),

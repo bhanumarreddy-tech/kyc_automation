@@ -34,21 +34,18 @@ async def process_kyc(
     if not company:
         raise HTTPException(status_code=400, detail="company_name is required")
 
-    max_bytes = settings.max_file_mb * 1024 * 1024
     uploads: list[tuple[str, bytes, str]] = []
     for upload in files or []:
         data = await upload.read()
-        if len(data) > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File '{upload.filename}' exceeds the {settings.max_file_mb} MB limit",
-            )
         uploads.append((upload.filename or "document", data, upload.content_type or ""))
 
+    total_payload = sum(len(raw) for _, raw, _ in uploads)
     logger.info(
-        "Processing KYC submission for '%s' with %d uploaded file(s)",
+        "Processing KYC submission for '%s' with %d uploaded file(s); total payload ~%.2f MiB "
+        "(frontend nginx allows 100 MiB for /api/; raise client_max_body_size if you need more)",
         company,
         len(uploads),
+        total_payload / (1024 * 1024),
     )
 
     rows = await run_pipeline(company, uploads)
