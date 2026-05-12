@@ -80,7 +80,12 @@ def get_settings() -> Settings:
         anthropic_api_key=api_key,
         anthropic_model=model,
         max_file_mb=_parse_int("MAX_FILE_MB", 20),
-        max_web_searches=_parse_int("MAX_WEB_SEARCHES", 3),
+        # NOTE: at request time Anthropic projects worst-case input tokens
+        # as roughly (prompt + max_uses * ~15k) for the web_search tool. On
+        # the 30k tokens/min starter tier even max_uses=2 (~33k projected)
+        # gets the request rejected up-front; max_uses=1 (~18k projected)
+        # is what fits. Raise this on a higher tier.
+        max_web_searches=_parse_int("MAX_WEB_SEARCHES", 1),
         cors_origins=_parse_origins(os.environ.get("CORS_ORIGINS")),
         answer_concurrency=_parse_int("ANSWER_CONCURRENCY", 1),
         answer_inter_call_delay_seconds=_parse_float(

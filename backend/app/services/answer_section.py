@@ -222,7 +222,12 @@ async def answer_section(
         try:
             response = await client.messages.create(
                 model=settings.anthropic_model,
-                max_tokens=8192,
+                # Output is a small JSON object (one entry per question, ~50
+                # tokens each); 2048 is ample even for the largest section
+                # and keeps the per-request output reservation modest, which
+                # also feeds into Anthropic's per-minute rate-limit
+                # projection for the request.
+                max_tokens=2048,
                 system=_SYSTEM_PROMPT,
                 tools=tools,
                 messages=messages,
