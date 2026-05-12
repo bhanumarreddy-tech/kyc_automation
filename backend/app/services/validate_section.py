@@ -301,11 +301,11 @@ async def validate_section(
         {"type": "text", "text": section_text},
     ]
 
-    prefill = "{"
-    messages = [
-        {"role": "user", "content": user_content},
-        {"role": "assistant", "content": prefill},
-    ]
+    # No assistant prefill: some models reject a final assistant turn ("This
+    # model does not support assistant message prefill"). JSON-only output is
+    # still enforced via _RESPONSE_FORMAT_INSTRUCTIONS; parse_json_response
+    # extracts the object from the reply.
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
 
     logger.info(
         "Validating section %d (%s) for '%s' against %d document(s) "
@@ -344,7 +344,7 @@ async def validate_section(
         )
 
     try:
-        data = parse_json_response(response, prefill=prefill)
+        data = parse_json_response(response)
     except (json.JSONDecodeError, ValueError):
         logger.warning(
             "Could not parse JSON from validation call for section %d", section_no
