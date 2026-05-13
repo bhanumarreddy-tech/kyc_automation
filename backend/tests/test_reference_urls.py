@@ -278,7 +278,7 @@ async def test_pipeline_merges_upload_and_url_docs(monkeypatch: pytest.MonkeyPat
 
     captured: dict[str, list] = {}
 
-    async def fake_answer(_company, _section_no, _section_name, questions):  # noqa: ANN202
+    async def fake_answer(_company, _section_no, _section_name, questions, **_kwargs):  # noqa: ANN202
         return [
             AnsweredQuestion(serial_no=q.serial_no, answer="x", sources=[]) for q in questions
         ]
@@ -297,6 +297,10 @@ async def test_pipeline_merges_upload_and_url_docs(monkeypatch: pytest.MonkeyPat
             for q in questions
         ]
 
+    async def fake_sec_hub(*_args, **_kwargs):  # noqa: ANN202
+        return None
+
+    monkeypatch.setattr(pipeline_mod, "resolve_sec_filings_hub", fake_sec_hub)
     monkeypatch.setattr(pipeline_mod, "parse_documents", fake_parse)
     monkeypatch.setattr(pipeline_mod, "ingest_reference_urls", fake_ingest)
     monkeypatch.setattr(pipeline_mod, "answer_section", fake_answer)

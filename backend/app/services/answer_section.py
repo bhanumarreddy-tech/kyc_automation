@@ -69,11 +69,14 @@ _SYSTEM_PROMPT = (
     "  calendar year) over outdated articles, scraped mirrors, blogs, "
     "  Wikimedia excerpts, or search snippets from years-old pages. Prefer "
     "  the EDGAR primary document or filing index for the fact.\n"
-    "- Listing sources: when the issuer is an SEC registrant (or EDGAR has the "
-    "  entity under a CIK), list EDGAR browse/filing URLs you actually "
-    "  retrieved BEFORE other weaker links in the ``sources`` array (most "
-    "  authoritative first), then cite other supporting URLs as needed "
-    "(up to three total).\n"
+    "- Sources are per serial_no — each JSON item's `sources` array must list "
+    "only URLs retrieved via search this turn whose content backs THAT item's "
+    "answer alone. Never paste the identical URL list onto every question. Avoid "
+    "the EDGAR browse landing page unless search actually returned grounding from "
+    "it for that specific answer — prefer linking the excerpt (specific 10-K, "
+    "10-Q primary document URL, Companies House filing, etc.). Prefer SEC "
+    "`www.sec.gov/Archives/edgar/` links you retrieved ahead of unrelated domains "
+    "when sorting up to three URLs per question.\n"
     "- SEC EDGAR links: prefer "
     "  https://www.sec.gov/Archives/edgar/... URLs over any "
     "  *.s3.amazonaws.com or raw storage mirror. Copy exhibit "
@@ -85,7 +88,9 @@ _SYSTEM_PROMPT = (
     "- Every factual answer (anything other than the exact literals "
     "  \"Not found\" or \"Not relevant\") MUST be supported by at least "
     "  one search result that you actually retrieved this turn, and "
-    "  that URL MUST appear in the 'sources' list for the question. Do "
+    "  that URL MUST appear in the 'sources' list for THAT question ONLY. "
+    "  Readers must be able to open each listed URL and find support for "
+    "  that answer. Do "
     "  NOT cite a URL you did not fetch.\n"
     "- Your training-data knowledge is a tie-breaker only: use it to "
     "  disambiguate or sanity-check what the web returned, never as the "
@@ -156,12 +161,13 @@ _RESPONSE_FORMAT_INSTRUCTIONS = (
     "    }\n"
     "  ]\n"
     "}\n"
-    "Include exactly one entry per question. Only list sources you "
-    "actually used to support the answer. When the issuer is on SEC EDGAR, "
-    "put EDGAR browse/filing URLs first before other domains; emit at "
-    "most three URLs total. For SEC filings use "
-    "www.sec.gov/Archives/edgar/ URLs only (not S3 mirrors); paste URLs "
-    "exactly as returned by search.\n"
+    "Include exactly one entry per question. Only list URLs in `sources` for that "
+    "question that search actually surfaced as evidence for THAT answer "
+    "(not a generic issuer bundle). Prefer www.sec.gov/Archives/edgar/ primary "
+    "documents retrieved this turn where applicable; at most three URLs total per "
+    "question. Paste URLs "
+    "exactly as returned by search. For SEC filings use "
+    "www.sec.gov/Archives/edgar/ URLs only (not S3 mirrors).\n"
     "Reminder: the 'answer' field "
     "must not restate the company name or the question, and must not "
     "begin with filler phrases such as 'The company...', 'It is...', or "
@@ -198,13 +204,17 @@ def _build_user_message(
     section_no: int,
     section_name: str,
     questions: list[KYCQuestion],
+    *,
+    issuer_sec_hint: str = "",
 ) -> str:
     question_lines = [
         f"  - serial_no={q.serial_no}: {q.question}" for q in questions
     ]
+    preamble = issuer_sec_hint or ""
     return (
         f"Company: {company}\n"
-        f"Section {section_no}: {section_name}\n\n"
+        + preamble
+        + f"Section {section_no}: {section_name}\n\n"
         f"Answer the following KYC questions about this company. You "
         f"MUST use search to ground every answer in live, "
         f"authoritative sources before responding - do not answer from "
@@ -212,7 +222,8 @@ def _build_user_message(
         f"all the questions below (e.g. one query for registry / "
         f"incorporation facts, one for executives, one for financials, "
         f"etc.), and run additional searches if a question is still "
-        f"unanswered. Cite only URLs you actually retrieved this turn. "
+        f"unanswered. Cite only URLs you actually retrieved this turn "
+        f"for each serial_no separately (no copied URL lists across questions). "
         f"Use the exact string \"Not relevant\" when the question does "
         f"not apply to this entity or context (see system rules); use "
         f"\"Not found\" only when the question could apply but public "
@@ -325,13 +336,17 @@ async def answer_section(
     section_no: int,
     section_name: str,
     questions: list[KYCQuestion],
+    *,
+    issuer_sec_hint: str = "",
 ) -> list[AnsweredQuestion]:
     """Run the answer phase for a section (with optional schema-repair retries)."""
 
     settings = get_settings()
     client = get_client()
 
-    user_message = _build_user_message(company, section_no, section_name, questions)
+    user_message = _build_user_message(
+        company, section_no, section_name, questions, issuer_sec_hint=issuer_sec_hint
+    )
 
     structured = _structured_json_with_search_supported(settings.gemini_model)
     logger.info(

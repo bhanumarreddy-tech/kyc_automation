@@ -84,8 +84,8 @@ SOURCE_URL_VERIFY_MAX_URLS = 250  # deduped probes per submission; 0 = unlimited
 # chunk URIs so Sources reflect URLs the API actually retrieved (when chunks are present).
 ANSWER_SOURCES_USE_GROUNDING_METADATA = True
 
-# Max clickable sources per answered row after reordering (SEC hub links first when
-# an EDGAR match exists; leftover slots filled from grounding / search citations).
+# Max clickable sources per row after sanitise (among URLs grounding/model cited;
+# SEC issuer hub URLs are ordered ahead of other cited links when overlap exists).
 ANSWER_SOURCES_MAX_COUNT = 3
 
 

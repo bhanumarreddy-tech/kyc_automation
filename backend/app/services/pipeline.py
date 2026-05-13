@@ -22,7 +22,7 @@ from app.schemas import KYCRow, SourceLink, ValidationSource
 from app.services.answer_section import AnsweredQuestion, answer_section
 from app.services.documents import parse_documents
 from app.services.reference_urls import ingest_reference_urls
-from app.services.sec_filings_hub import inject_sec_hub_into_answers, resolve_sec_filings_hub
+from app.services.sec_filings_hub import format_issuer_edgar_search_hint, resolve_sec_filings_hub
 from app.services.source_urls import (
     prioritize_and_cap_answer_sources,
     sanitize_answer_sources_urls,
@@ -43,13 +43,12 @@ async def run_pipeline(
     sections = group_by_section()
 
     ref_urls = reference_urls or []
-    sec_hub_task = asyncio.create_task(resolve_sec_filings_hub(company, settings))
-
-    # Uploads first, then user-supplied URLs (same order as in the run form).
-    upload_docs, url_docs = await asyncio.gather(
+    upload_docs, url_docs, sec_hub = await asyncio.gather(
         parse_documents(uploads),
         ingest_reference_urls(ref_urls, settings),
+        resolve_sec_filings_hub(company, settings),
     )
+    issuer_sec_hint = format_issuer_edgar_search_hint(sec_hub)
     parsed_docs = [*upload_docs, *url_docs]
     logger.info(
         "Parsed %d uploaded document(s) and %d reference URL document(s)",
@@ -76,7 +75,13 @@ async def run_pipeline(
 
     async def _bounded_answer(section_no: int, section_name: str, questions: list) -> list[AnsweredQuestion]:
         async with answer_sem:
-            result = await answer_section(company, section_no, section_name, questions)
+            result = await answer_section(
+                company,
+                section_no,
+                section_name,
+                questions,
+                issuer_sec_hint=issuer_sec_hint,
+            )
             # Hold the semaphore across the post-call sleep so the next queued
             # answer call doesn't fire while we're still waiting for the
             # rolling per-minute token window to free up. Skip the sleep on
@@ -104,13 +109,6 @@ async def run_pipeline(
     answers_per_section: list[list[AnsweredQuestion]] = await asyncio.gather(
         *answer_tasks, return_exceptions=False
     )
-
-    try:
-        sec_hub = await sec_hub_task
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("SEC filings hub task failed: %s", exc)
-        sec_hub = None
-    inject_sec_hub_into_answers(answers_per_section, sec_hub)
 
     await sanitize_answer_sources_urls(answers_per_section, settings)
     prioritize_and_cap_answer_sources(

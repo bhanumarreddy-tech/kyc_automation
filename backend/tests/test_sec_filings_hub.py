@@ -1,14 +1,13 @@
-"""Unit tests for SEC EDGAR hub resolution used to enrich answer citations."""
+"""Unit tests for SEC EDGAR issuer resolution and search hints."""
 
 from __future__ import annotations
 
-from app.services.answer_section import AnsweredQuestion
 from app.services.sec_filings_hub import (
     SecFilingsHub,
     _archives_primary_url,
     _pick_best_ticker_match,
     _recent_verification_filings,
-    inject_sec_hub_into_answers,
+    format_issuer_edgar_search_hint,
 )
 
 
@@ -74,22 +73,21 @@ def test_recent_verification_filings_order_and_cap() -> None:
     assert "e.htm" in out[2]["url"]
 
 
-def test_inject_skips_sentinels() -> None:
+def test_format_edgar_hint_includes_browse_and_rules() -> None:
     hub = SecFilingsHub(
-        cik_pad="0000764478",
-        matched_title="Test Co",
+        cik_pad="0000073309",
+        matched_title="EXAMPLE CORP",
         hub_sources=[
-            {"title": "Browse", "url": "https://www.sec.gov/edgar/browse/?CIK=0000764478"}
+            {"title": "Browse", "url": "https://www.sec.gov/edgar/browse/?CIK=0000073309"},
+            {"title": "10-K", "url": "https://www.sec.gov/Archives/edgar/data/73309/acc/doc.htm"},
         ],
     )
-    rows = [
-        [
-            AnsweredQuestion(1, "hello", [{"title": "x", "url": "https://a.example/z"}]),
-            AnsweredQuestion(2, "Not found", []),
-            AnsweredQuestion(3, "Not relevant", []),
-        ]
-    ]
-    inject_sec_hub_into_answers(rows, hub)
-    assert rows[0][0].sources[0]["url"] == hub.hub_sources[0]["url"]
-    assert rows[0][1].sources == []
-    assert rows[0][2].sources == []
+    text = format_issuer_edgar_search_hint(hub)
+    assert "0000073309" in text
+    assert "EXAMPLE CORP" in text
+    assert "edgar/browse" in text
+    assert "serial_no" in text.lower()
+
+
+def test_format_edgar_hint_empty_without_hub() -> None:
+    assert format_issuer_edgar_search_hint(None) == ""

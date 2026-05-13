@@ -1,10 +1,11 @@
-"""Resolve SEC EDGAR hubs and newest filing primaries so Sources stay verifiable.
+"""Resolve SEC EDGAR issuer identity and canonical filing URLs for search hints.
 
-Matches the company string against SEC ``company_tickers.json``, pulls
-``submissions`` from ``data.sec.gov``, then prepends authoritative links:
+Uses ``company_tickers.json`` and ``data.sec.gov`` submissions so the pipeline can
+tell the answer model **which CIK/browse page to steer search toward**.
 
-- EDGAR HTML browse hub (canonical filing list),
-- Recent primary-document URLs from the filings index (10-K / 10-Q first).
+Per-question ``sources`` stay limited to URLs the model actually retrieved for
+that question (see answer phase + grounding merge); hub links are never copied
+onto every row as synthetic citations.
 """
 
 from __future__ import annotations
@@ -14,14 +15,12 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from dataclasses import replace
 from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
 
 from app.config import Settings
-from app.services.answer_section import AnsweredQuestion
 from app.services.gemini_client import normalize_source_url_for_match
 from app.services.reference_urls import reference_fetch_user_agent
 
@@ -263,21 +262,28 @@ async def resolve_sec_filings_hub(
     )
 
 
-def inject_sec_hub_into_answers(
-    sections: list[list[AnsweredQuestion]],
-    hub: SecFilingsHub | None,
-) -> None:
-    """Prepend hub sources to grounded rows (mutates *sections* in place)."""
+def format_issuer_edgar_search_hint(hub: SecFilingsHub | None) -> str:
+    """User-message block guiding SEC search — not a citation to paste on every row."""
     if hub is None or not hub.hub_sources:
-        return
-
-    sentinel_answers = {"", "not found", "not relevant"}
-    extras = hub.hub_sources
-
-    for block in sections:
-        for idx, aq in enumerate(block):
-            text = str(aq.answer or "").strip().lower()
-            if text in sentinel_answers:
-                continue
-            merged_sources = _dedupe_merge_front(extras, list(aq.sources or []))
-            block[idx] = replace(aq, sources=merged_sources)
+        return ""
+    browse = ""
+    for s in hub.hub_sources:
+        u = str(s.get("url") or "").strip()
+        ul = u.lower()
+        if "/edgar/browse" in ul or "/cgi-bin/browse-edgar" in ul:
+            browse = u
+            break
+    if not browse:
+        browse = str(hub.hub_sources[0].get("url") or "")
+    matched = hub.matched_title.replace("\n", " ").strip()[:240]
+    return (
+        f"Issuer verified on SEC EDGAR — matched registrant title: {matched}; "
+        f"CIK (10-digit): {hub.cik_pad}. Canonical filings browse hub: {browse}\n"
+        "Per question you MUST list ONLY `sources` URLs that your searches actually "
+        "retrieved THIS TURN and that support THAT question's facts. Do not repeat "
+        "the same issuer-wide URLs for every serial_no unless search truly "
+        "grounded each answer on those pages. Do not cite the browse hub URL in "
+        "`sources` unless it was one of the pages search returned as evidence for "
+        "that answer (prefer linking the specific excerpt, e.g. a 10-K or 10-Q "
+        "primary document).\n\n"
+    )

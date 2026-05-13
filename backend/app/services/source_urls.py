@@ -287,7 +287,11 @@ def prioritize_and_cap_answer_sources(
     *,
     verification_hub_sources: list[dict[str, str]] | None,
 ) -> None:
-    """Prefer SEC hub URLs first, then other citations; dedupe by URL; hard cap."""
+    """Reorder URLs already cited per row so SEC issuer hub matches come first,
+
+    then other domains in row order; dedupe; cap length. Hub links only appear when
+    the model or grounding actually cited them (never injected wholesale per row).
+    """
     max_n = max(1, settings.answer_sources_max_count)
 
     hub_norm_order: list[str] = []
