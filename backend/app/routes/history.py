@@ -37,6 +37,10 @@ async def list_history(
     items: list[HistoryListItem] = []
     for r in records:
         completion_pct, needs_review_n = history_metrics_from_rows_json(r.rows)
+        ref_urls = r.reference_urls if isinstance(r.reference_urls, list) else []
+        ref_n = sum(
+            1 for u in ref_urls if u is not None and str(u).strip()
+        )
         items.append(
             HistoryListItem(
                 submission_id=str(r.id),
@@ -47,6 +51,7 @@ async def list_history(
                 duration_ms=r.duration_ms,
                 completion_percent=completion_pct,
                 needs_review_count=needs_review_n,
+                reference_url_count=ref_n,
             )
         )
     return items

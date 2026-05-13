@@ -61,6 +61,12 @@ class AttachedDocument(BaseModel):
     object_key: str | None = Field(default=None, alias="objectKey")
 
 
+class RerunProcessRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    submission_id: str = Field(alias="submissionId", min_length=1)
+
+
 class ProcessResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -123,6 +129,7 @@ class HistoryListItem(BaseModel):
     duration_ms: int | None = Field(default=None, alias="durationMs")
     completion_percent: int = Field(default=0, alias="completionPercent")
     needs_review_count: int = Field(default=0, alias="needsReviewCount")
+    reference_url_count: int = Field(default=0, alias="referenceUrlCount")
 
 
 class HistoryDetailResponse(BaseModel):

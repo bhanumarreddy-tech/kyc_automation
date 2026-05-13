@@ -10,6 +10,7 @@ from uuid import UUID
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from app.config import Settings
 from app.schemas import AttachedDocument
@@ -93,6 +94,24 @@ async def upload_submission_files(
         )
 
     return out
+
+
+async def get_object_bytes(settings: Settings, object_key: str) -> bytes:
+    """Fetch object body from the configured bucket (server-side; used for reruns)."""
+    assert settings.s3_bucket
+    client = _s3_client(settings)
+
+    def _get() -> bytes:
+        try:
+            resp = client.get_object(Bucket=settings.s3_bucket, Key=object_key)
+            return resp["Body"].read()
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("NoSuchKey", "404"):
+                raise FileNotFoundError(object_key) from exc
+            raise
+
+    return await asyncio.to_thread(_get)
 
 
 def presigned_download_url(

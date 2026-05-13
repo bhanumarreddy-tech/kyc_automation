@@ -13,7 +13,16 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Upload, FileText, Home, X, ArrowLeft, Loader2, Link2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Upload, FileText, Home, X, ArrowLeft, Loader2, Link2, RefreshCw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import ProcessingView from "@/components/kyc/ProcessingView";
 import { ResultsTable } from "@/components/kyc/ResultsTable";
@@ -64,6 +73,7 @@ interface HistoryListItem {
   durationMs?: number | null;
   completionPercent?: number;
   needsReviewCount?: number;
+  referenceUrlCount?: number;
 }
 
 function formatDurationMs(ms: number | null | undefined): string {
@@ -95,7 +105,35 @@ function parseReferenceUrlsFromText(raw: string): string[] {
   return out;
 }
 
+/** Rerun needs S3 object keys on every stored attachment (newer saves). */
+function historyItemCanRerun(item: HistoryListItem): boolean {
+  if (item.documentCount === 0) {
+    return true;
+  }
+  const docs = item.attachedDocuments ?? [];
+  if (docs.length === 0) {
+    return false;
+  }
+  return docs.every((d) => Boolean(d.objectKey));
+}
+
+function historyDetailCanRerun(meta: {
+  attachedDocuments: AttachedDocumentItem[];
+}): boolean {
+  if (meta.attachedDocuments.length === 0) {
+    return true;
+  }
+  return meta.attachedDocuments.every((d) => Boolean(d.objectKey));
+}
+
+interface RerunConfirmPayload {
+  submissionId: string;
+  companyLabel: string;
+  displayCounts: { files: number; urls: number };
+}
+
 const API_ENDPOINT = apiUrl("/api/process");
+const RERUN_ENDPOINT = apiUrl("/api/process/rerun");
 const HISTORY_LIST_ENDPOINT = apiUrl("/api/history");
 
 export default function KYCAutomation() {
@@ -126,6 +164,12 @@ export default function KYCAutomation() {
     submissionId: string;
     documents: AttachedDocumentItem[];
   } | null>(null);
+  /** During processing, doc/url counts for the loading screen (used for history reruns). */
+  const [processingCounts, setProcessingCounts] = useState<{ files: number; urls: number } | null>(
+    null,
+  );
+  const [rerunInFlight, setRerunInFlight] = useState(false);
+  const [rerunConfirm, setRerunConfirm] = useState<RerunConfirmPayload | null>(null);
 
   useEffect(() => {
     const preventDefaults = (e: DragEvent) => {
@@ -231,6 +275,148 @@ export default function KYCAutomation() {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const finalizeSuccessfulProcess = (
+    data: {
+      rows: KYCRow[];
+      submissionId?: string;
+      durationMs?: number | null;
+      attachedDocuments?: AttachedDocumentItem[];
+      referenceUrls?: string[];
+    },
+    companyLabel: string,
+  ) => {
+    setRows(hydrateKycRows(data.rows));
+    setStep("results");
+
+    setLastRunMeta({
+      durationMs:
+        typeof data.durationMs === "number" && !Number.isNaN(data.durationMs)
+          ? data.durationMs
+          : null,
+      referenceUrls: Array.isArray(data.referenceUrls) ? data.referenceUrls : [],
+    });
+
+    if (
+      typeof data.submissionId === "string" &&
+      data.submissionId.length > 0 &&
+      Array.isArray(data.attachedDocuments) &&
+      data.attachedDocuments.length > 0
+    ) {
+      setCompletedRunDownloads({
+        submissionId: data.submissionId,
+        documents: data.attachedDocuments,
+      });
+    } else {
+      setCompletedRunDownloads(null);
+    }
+
+    const durationLabel =
+      typeof data.durationMs === "number" && !Number.isNaN(data.durationMs)
+        ? ` Run time ${formatDurationMs(data.durationMs)}.`
+        : "";
+
+    toast({
+      title: "Processing complete",
+      description: data.submissionId
+        ? `KYC questionnaire populated for ${companyLabel.trim()}. Saved to history.${durationLabel}`
+        : `KYC questionnaire populated for ${companyLabel.trim()}.${durationLabel}`,
+    });
+  };
+
+  const runRerunBySubmissionId = async (
+    submissionId: string,
+    companyLabel: string,
+    displayCounts: { files: number; urls: number },
+  ) => {
+    setCompanyName(companyLabel.trim());
+    setRerunInFlight(true);
+    setProcessingCounts(displayCounts);
+    setMainTab("run");
+    setHistoryDetailId(null);
+    setHistoryRunMeta(null);
+    setCompletedRunDownloads(null);
+    setStep("processing");
+
+    try {
+      const res = await fetch(RERUN_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ submissionId }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Backend error ${res.status}: ${text || res.statusText}`);
+      }
+
+      const data = (await res.json()) as {
+        rows: KYCRow[];
+        submissionId?: string;
+        durationMs?: number | null;
+        attachedDocuments?: AttachedDocumentItem[];
+        referenceUrls?: string[];
+      };
+      if (!data?.rows || !Array.isArray(data.rows)) {
+        throw new Error("Backend returned an invalid response");
+      }
+
+      finalizeSuccessfulProcess(data, companyLabel.trim());
+    } catch (error) {
+      console.error("Rerun error:", error);
+      toast({
+        title: "Rerun failed",
+        description: error instanceof Error ? error.message : "Unknown error occurred",
+        variant: "destructive",
+      });
+      setStep("upload");
+      setLastRunMeta(null);
+    } finally {
+      setRerunInFlight(false);
+      setProcessingCounts(null);
+    }
+  };
+
+  const requestRerunFromHistoryDetail = () => {
+    if (!historyDetailId || !historyRunMeta || !historyDetailCanRerun(historyRunMeta)) {
+      return;
+    }
+    setRerunConfirm({
+      submissionId: historyDetailId,
+      companyLabel: companyName.trim(),
+      displayCounts: {
+        files: historyRunMeta.attachedDocuments.length,
+        urls: historyRunMeta.referenceUrls.length,
+      },
+    });
+  };
+
+  const requestRerunFromHistoryList = (item: HistoryListItem) => {
+    if (!historyItemCanRerun(item)) {
+      return;
+    }
+    setRerunConfirm({
+      submissionId: item.submissionId,
+      companyLabel: item.companyName.trim(),
+      displayCounts: {
+        files: item.documentCount,
+        urls: item.referenceUrlCount ?? 0,
+      },
+    });
+  };
+
+  const confirmRerun = () => {
+    const payload = rerunConfirm;
+    setRerunConfirm(null);
+    if (!payload || !payload.companyLabel) {
+      return;
+    }
+    void runRerunBySubmissionId(
+      payload.submissionId,
+      payload.companyLabel,
+      payload.displayCounts,
+    );
+  };
+
   const closeHistoryDetail = () => {
     setHistoryDetailId(null);
     setHistoryRunMeta(null);
@@ -312,6 +498,8 @@ export default function KYCAutomation() {
       return;
     }
 
+    const refUrls = parseReferenceUrlsFromText(referenceUrlsText);
+    setProcessingCounts({ files: files.length, urls: refUrls.length });
     setStep("processing");
     setCompletedRunDownloads(null);
 
@@ -321,7 +509,6 @@ export default function KYCAutomation() {
       for (const file of files) {
         formData.append("files", file, file.name);
       }
-      const refUrls = parseReferenceUrlsFromText(referenceUrlsText);
       for (const u of refUrls) {
         formData.append("reference_urls", u);
       }
@@ -347,39 +534,7 @@ export default function KYCAutomation() {
         throw new Error("Backend returned an invalid response");
       }
 
-      setRows(hydrateKycRows(data.rows));
-      setStep("results");
-
-      setLastRunMeta({
-        durationMs: typeof data.durationMs === "number" && !Number.isNaN(data.durationMs) ? data.durationMs : null,
-        referenceUrls: Array.isArray(data.referenceUrls) ? data.referenceUrls : [],
-      });
-
-      if (
-        typeof data.submissionId === "string" &&
-        data.submissionId.length > 0 &&
-        Array.isArray(data.attachedDocuments) &&
-        data.attachedDocuments.length > 0
-      ) {
-        setCompletedRunDownloads({
-          submissionId: data.submissionId,
-          documents: data.attachedDocuments,
-        });
-      } else {
-        setCompletedRunDownloads(null);
-      }
-
-      const durationLabel =
-        typeof data.durationMs === "number" && !Number.isNaN(data.durationMs)
-          ? ` Run time ${formatDurationMs(data.durationMs)}.`
-          : "";
-
-      toast({
-        title: "Processing complete",
-        description: data.submissionId
-          ? `KYC questionnaire populated for ${companyName.trim()}. Saved to history.${durationLabel}`
-          : `KYC questionnaire populated for ${companyName.trim()}.${durationLabel}`,
-      });
+      finalizeSuccessfulProcess(data, companyName.trim());
     } catch (error) {
       console.error("Processing error:", error);
       toast({
@@ -389,6 +544,8 @@ export default function KYCAutomation() {
       });
       setStep("upload");
       setLastRunMeta(null);
+    } finally {
+      setProcessingCounts(null);
     }
   };
 
@@ -400,6 +557,9 @@ export default function KYCAutomation() {
     setRows([]);
     setCompletedRunDownloads(null);
     setLastRunMeta(null);
+    setProcessingCounts(null);
+    setRerunInFlight(false);
+    setRerunConfirm(null);
   };
 
   const handleRowChange = (serialNo: number, updates: Partial<KYCRow>) => {
@@ -574,8 +734,10 @@ export default function KYCAutomation() {
             {step === "processing" && (
           <ProcessingView
             companyName={companyName}
-            fileCount={files.length}
-            referenceUrlCount={parseReferenceUrlsFromText(referenceUrlsText).length}
+            fileCount={processingCounts?.files ?? files.length}
+            referenceUrlCount={
+              processingCounts?.urls ?? parseReferenceUrlsFromText(referenceUrlsText).length
+            }
           />
             )}
 
@@ -596,9 +758,7 @@ export default function KYCAutomation() {
                   <div className="text-muted-foreground text-xs uppercase tracking-wide">
                     Attached documents
                   </div>
-                  {files.length === 0 ? (
-                    <p className="text-muted-foreground">No documents were uploaded.</p>
-                  ) : (
+                  {files.length > 0 ? (
                     <ul className="space-y-2">
                       {files.map((f, idx) => (
                         <li
@@ -615,6 +775,29 @@ export default function KYCAutomation() {
                         </li>
                       ))}
                     </ul>
+                  ) : completedRunDownloads && completedRunDownloads.documents.length > 0 ? (
+                    <ul className="space-y-2">
+                      {completedRunDownloads.documents.map((doc, idx) => (
+                        <li
+                          key={`${doc.objectKey ?? doc.filename}-${idx}`}
+                          className="flex flex-wrap items-center gap-2 p-2 bg-background rounded-md border"
+                        >
+                          <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <AttachmentNameLink
+                            submissionId={completedRunDownloads.submissionId}
+                            doc={doc}
+                            className="flex-1 min-w-0 truncate text-left font-medium"
+                          />
+                          {typeof doc.sizeBytes === "number" && doc.sizeBytes >= 0 && (
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">
+                              {(doc.sizeBytes / 1024 / 1024).toFixed(2)} MB
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-muted-foreground">No documents were uploaded.</p>
                   )}
                 </div>
                 <div className="space-y-2">
@@ -646,7 +829,9 @@ export default function KYCAutomation() {
                 </div>
               </div>
             )}
-            {completedRunDownloads && completedRunDownloads.documents.length > 0 && (
+            {completedRunDownloads &&
+              completedRunDownloads.documents.length > 0 &&
+              files.length > 0 && (
               <div className="rounded-md border bg-muted/30 p-4 text-sm space-y-2">
                 <div className="text-muted-foreground text-xs uppercase tracking-wide">
                   Stored uploads (click to download)
@@ -695,6 +880,29 @@ export default function KYCAutomation() {
                 <div className="flex flex-wrap gap-2">
                   <Button type="button" variant="outline" onClick={closeHistoryDetail}>
                     Back to list
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="default"
+                    className="gap-2"
+                    disabled={
+                      rerunInFlight ||
+                      !historyRunMeta ||
+                      !historyDetailCanRerun(historyRunMeta)
+                    }
+                    title={
+                      historyRunMeta && !historyDetailCanRerun(historyRunMeta)
+                        ? "This saved run has no per-file storage keys. Start a new run and upload again."
+                        : "Run again with the same stored files and reference URLs"
+                    }
+                    onClick={requestRerunFromHistoryDetail}
+                  >
+                    {rerunInFlight ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                    ) : (
+                      <RefreshCw className="h-4 w-4" aria-hidden />
+                    )}
+                    Rerun
                   </Button>
                 </div>
 
@@ -811,7 +1019,7 @@ export default function KYCAutomation() {
                             Duration
                           </TableHead>
                           <TableHead className="whitespace-nowrap">Saved</TableHead>
-                          <TableHead className="text-right">Open</TableHead>
+                          <TableHead className="text-right min-w-[168px]">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -902,17 +1110,40 @@ export default function KYCAutomation() {
                               <TableCell className="text-muted-foreground whitespace-nowrap">
                                 {new Date(item.createdAt).toLocaleString()}
                               </TableCell>
-                              <TableCell className="text-right">
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="secondary"
-                                  onClick={() =>
-                                    void openHistorySubmission(item.submissionId)
-                                  }
-                                >
-                                  Open
-                                </Button>
+                              <TableCell className="text-right align-top">
+                                <div className="flex flex-col items-stretch gap-1 sm:flex-row sm:justify-end">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="secondary"
+                                    disabled={rerunInFlight}
+                                    onClick={() =>
+                                      void openHistorySubmission(item.submissionId)
+                                    }
+                                  >
+                                    Open
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="gap-1"
+                                    disabled={rerunInFlight || !historyItemCanRerun(item)}
+                                    title={
+                                      !historyItemCanRerun(item)
+                                        ? "Cannot rerun: legacy save without stored files, or metadata is incomplete. Use New run."
+                                        : "Run again with the same stored files and reference URLs"
+                                    }
+                                    onClick={() => requestRerunFromHistoryList(item)}
+                                  >
+                                    {rerunInFlight ? (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" aria-hidden />
+                                    ) : (
+                                      <RefreshCw className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                                    )}
+                                    Rerun
+                                  </Button>
+                                </div>
                               </TableCell>
                             </TableRow>
                           );
@@ -925,6 +1156,51 @@ export default function KYCAutomation() {
             )}
           </TabsContent>
         </Tabs>
+
+        <AlertDialog
+          open={rerunConfirm !== null}
+          onOpenChange={(open) => {
+            if (!open) setRerunConfirm(null);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Rerun this KYC job?</AlertDialogTitle>
+              <AlertDialogDescription asChild>
+                <div className="text-sm text-muted-foreground space-y-2 text-left">
+                  {rerunConfirm ? (
+                    <>
+                      <p>
+                        This starts a new pipeline run for{" "}
+                        <span className="font-medium text-foreground">
+                          {rerunConfirm.companyLabel}
+                        </span>{" "}
+                        using the same stored inputs as the saved submission.
+                      </p>
+                      <ul className="list-disc space-y-1 pl-5">
+                        <li>
+                          {rerunConfirm.displayCounts.files}{" "}
+                          {rerunConfirm.displayCounts.files === 1 ? "document" : "documents"}
+                        </li>
+                        <li>
+                          {rerunConfirm.displayCounts.urls}{" "}
+                          {rerunConfirm.displayCounts.urls === 1 ? "reference URL" : "reference URLs"}
+                        </li>
+                      </ul>
+                      <p>A new history entry is created when processing completes.</p>
+                    </>
+                  ) : null}
+                </div>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={rerunInFlight}>Cancel</AlertDialogCancel>
+              <Button type="button" disabled={rerunInFlight} onClick={confirmRerun}>
+                Confirm rerun
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );
