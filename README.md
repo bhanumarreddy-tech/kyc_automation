@@ -39,7 +39,7 @@ uvicorn app.main:app --reload --port 8000
 
 Health check: `GET http://localhost:8000/api/health`
 
-Environment variables are documented in `backend/.env.example`. **`GEMINI_API_KEY`** (or **`GOOGLE_API_KEY`**) is required. Tune `ANSWER_CONCURRENCY` and `ANSWER_INTER_CALL_DELAY_SECONDS` for your Gemini API quota.
+Secrets are listed in `backend/.env.example` (copy to `backend/.env`). **`GEMINI_API_KEY`** (or **`GOOGLE_API_KEY`**) is required. Models, concurrency caps, validation limits, overload backoff, and **`CORS_ALLOWED_ORIGINS`** are set in **`backend/app/config.py`** (not environment variables).
 
 ### 2. Frontend
 
@@ -64,7 +64,7 @@ In **production builds**, API calls use **`VITE_API_BASE_URL`** when set; otherw
 
 Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose).
 
-1. Put **`GEMINI_API_KEY`** (and any other vars) in **`backend/.env`**.
+1. Put **`GEMINI_API_KEY`** and any S3/Postgres secrets (see `backend/.env.example`) in **`backend/.env`**.
 2. From the **repository root**:
 
 ```sh
@@ -77,12 +77,12 @@ docker compose up -d
 4. Logs: `docker compose logs -f`. Stop: `docker compose down`.
 
 For **split deployments** (static UI on one host, API on another), build the frontend with  
-`VITE_API_BASE_URL=https://your-api-host` and set **`CORS_ORIGINS`** on the backend to your UI origin.
+`VITE_API_BASE_URL=https://your-api-host` and add your UI origin to **`CORS_ALLOWED_ORIGINS`** in **`backend/app/config.py`**.
 
 ## Other deployment notes
 
 - **Frontend (Cloudflare Workers):** The repo includes `wrangler.jsonc`. Typical commands: `npm run build`, then `npx wrangler deploy`. Set **`VITE_API_BASE_URL`** to your public API URL before building.
-- **Backend:** Host `backend/` on a Python-friendly platform (Railway, Render, Fly.io, Cloud Run, etc.). Set **`CORS_ORIGINS`** when the browser talks to the API on a different origin than the SPA.
+- **Backend:** Host `backend/` on a Python-friendly platform (Railway, Render, Fly.io, Cloud Run, etc.). Update **`CORS_ALLOWED_ORIGINS`** in **`app/config.py`** when the browser hits the API on a different origin than the SPA.
 
 ## License / project origin
 

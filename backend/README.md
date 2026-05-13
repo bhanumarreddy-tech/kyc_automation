@@ -47,13 +47,14 @@ The frontend (`npm run dev` at the repo root, default port 8080) proxies all `/a
 
 ## Configuration
 
-See `.env.example`. Recognised variables:
+Non-secret tuning (Gemini answer/validation model IDs, validation limits,
+concurrency, overload backoff, CORS allow-list, and similar) lives in the
+constants at the top of [`app/config.py`](app/config.py).
 
-| Variable                         | Default                                         | Notes |
-|----------------------------------|-------------------------------------------------|-------|
-| `GEMINI_API_KEY`                 | _(required)_                                    | Google AI Studio API key |
-| `GOOGLE_API_KEY`                 | —                                               | Alias for `GEMINI_API_KEY` |
-| `GEMINI_MODEL`                   | `gemini-3.1-flash-preview`                      | Override model ID |
-| `GEMINI_OVERLOAD_EXTRA_ATTEMPTS` | `3`                                             | Extra full retries after backoff on transient errors |
-| `GEMINI_OVERLOAD_BASE_DELAY_SECONDS` | `10`                                        | Base delay (seconds) for overload backoff |
-| `CORS_ORIGINS`                   | `http://localhost:8080,http://localhost:5173,…` | Comma-separated allow-list |
+Secrets in `.env` (see [.env.example](.env.example)):
+
+| Variable | Notes |
+|----------|-------|
+| `GEMINI_API_KEY` | _(required)_ Google AI Studio API key (`GOOGLE_API_KEY` alias) |
+| `DATABASE_PASSWORD` | Optional Postgres password for history |
+| `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Required when uploads use object storage |

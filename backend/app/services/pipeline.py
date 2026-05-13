@@ -47,11 +47,12 @@ async def run_pipeline(
     logger.info(
         "Running pipeline with answer_concurrency=%d, "
         "answer_inter_call_delay_seconds=%.1f, validation_concurrency=%d, "
-        "validation_attach_documents=%s",
+        "validation_attach_documents=%s, gemini_validation_model=%s",
         settings.answer_concurrency,
         inter_call_delay,
         settings.validation_concurrency,
         settings.validation_attach_documents,
+        settings.gemini_validation_model,
     )
 
     async def _bounded_answer(section_no: int, section_name: str, questions: list) -> list[AnsweredQuestion]:

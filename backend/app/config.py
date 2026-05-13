@@ -1,4 +1,4 @@
-"""Runtime configuration loaded from environment variables.."""
+"""Runtime configuration: secrets from environment, tuning from module constants."""
 
 from __future__ import annotations
 
@@ -11,8 +11,54 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-# Default Gemini model when GEMINI_MODEL is unset (Gemini 3.1 Flash — preview ID).
-DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-preview"
+
+# ---------------------------------------------------------------------------
+# Non-secret tuning (change here; not via environment)
+# ---------------------------------------------------------------------------
+
+# Answer phase: JSON schema + Google Search (prefer Gemini 3.x class models).
+GEMINI_MODEL_ANSWER = "gemini-3-flash-preview"
+
+# Validation / validation-sources phase (e.g. Gemini 2.5 Pro).
+# GEMINI_MODEL_VALIDATION = "gemini-2.5-pro"
+GEMINI_MODEL_VALIDATION = "gemini-3-flash-preview"
+LOG_LEVEL = "INFO"
+
+CORS_ALLOWED_ORIGINS: tuple[str, ...] = (
+    "http://localhost:8080",
+    "http://localhost:5173",
+    "http://127.0.0.1:8080",
+    "http://127.0.0.1:5173",
+)
+
+# Pipeline concurrency (respect API quota in production).
+ANSWER_CONCURRENCY = 8
+ANSWER_INTER_CALL_DELAY_SECONDS = 0.0
+VALIDATION_CONCURRENCY = 2
+
+# When True, send raw PDF/image bytes to validation calls; else extracted text only.
+VALIDATION_ATTACH_DOCUMENTS = False
+
+# ~75% of typical Gemini file limits (50 MiB PDF, 7 MiB text-style, 1000 pages,
+# 3000 files) plus ~75% text budgets vs prior app defaults.
+VALIDATION_MAX_PDF_BYTES = 39_321_600  # 0.75 × 50 MiB
+VALIDATION_MAX_IMAGE_BYTES = 5_505_024  # 0.75 × 7 MiB
+VALIDATION_MAX_TOTAL_TEXT_CHARS = 225_000
+VALIDATION_MAX_TEXT_PREVIEW_CHARS = 37_500
+VALIDATION_MAX_NATIVE_PARTS_PER_REQUEST = 2250  # 0.75 × 3000 files/prompt
+VALIDATION_MAX_PAGES_PER_PDF_SLICE = 750  # 0.75 × 1000 pages
+VALIDATION_TEXT_CHUNK_CHARS = 36_000
+
+VALIDATION_USE_CHUNK_RETRIEVAL = False
+VALIDATION_RETRIEVAL_CHUNK_TARGET_CHARS = 2250
+VALIDATION_RETRIEVAL_TOP_CHUNKS = 36
+VALIDATION_RETRIEVAL_RECALL_CHUNKS = 72
+
+ENABLE_PROMPT_CACHING = True
+
+GEMINI_OVERLOAD_EXTRA_ATTEMPTS = 3
+GEMINI_OVERLOAD_BASE_DELAY_SECONDS = 10.0
+
 
 # Railway Postgres — non-secret connection defaults (match Railway Postgres plugin outputs).
 # Password comes only from env (DATABASE_PASSWORD / POSTGRES_PASSWORD / PGPASSWORD).
@@ -64,27 +110,11 @@ def _resolve_database_url() -> str | None:
     )
 
 
-def _parse_origins(raw: str | None) -> list[str]:
-    if not raw:
-        return [
-            "http://localhost:8080",
-            "http://localhost:5173",
-            "http://127.0.0.1:8080",
-            "http://127.0.0.1:5173",
-        ]
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
-
-# Normalize the log level
-def _normalize_log_level(raw: str | None, default: str = "INFO") -> str:
-    if not raw or not raw.strip():
-        return default
-    return raw.strip().upper()
-
-
 @dataclass(frozen=True)
 class Settings:
     gemini_api_key: str
     gemini_model: str
+    gemini_validation_model: str
     database_url: str | None = None
     log_level: str = "INFO"
     cors_origins: list[str] = field(default_factory=list)
@@ -92,11 +122,20 @@ class Settings:
     answer_inter_call_delay_seconds: float = 0.0
     validation_concurrency: int = 2
     validation_attach_documents: bool = False
-    enable_prompt_caching: bool = True
-    # After SDK retries, quota/overload can still surface; extra backoff rounds.
-    overload_extra_attempts: int = 3
-    overload_base_delay_seconds: float = 10.0
-    # S3-compatible uploads (optional; required when users attach files — see S3_* env vars).
+    validation_max_pdf_bytes: int = VALIDATION_MAX_PDF_BYTES
+    validation_max_image_bytes: int = VALIDATION_MAX_IMAGE_BYTES
+    validation_max_total_text_chars: int = VALIDATION_MAX_TOTAL_TEXT_CHARS
+    validation_max_text_preview_chars: int = VALIDATION_MAX_TEXT_PREVIEW_CHARS
+    validation_max_native_parts_per_request: int = VALIDATION_MAX_NATIVE_PARTS_PER_REQUEST
+    validation_max_pages_per_pdf_slice: int = VALIDATION_MAX_PAGES_PER_PDF_SLICE
+    validation_text_chunk_chars: int = VALIDATION_TEXT_CHUNK_CHARS
+    validation_use_chunk_retrieval: bool = VALIDATION_USE_CHUNK_RETRIEVAL
+    validation_retrieval_chunk_target_chars: int = VALIDATION_RETRIEVAL_CHUNK_TARGET_CHARS
+    validation_retrieval_top_chunks: int = VALIDATION_RETRIEVAL_TOP_CHUNKS
+    validation_retrieval_recall_chunks: int = VALIDATION_RETRIEVAL_RECALL_CHUNKS
+    enable_prompt_caching: bool = ENABLE_PROMPT_CACHING
+    overload_extra_attempts: int = GEMINI_OVERLOAD_EXTRA_ATTEMPTS
+    overload_base_delay_seconds: float = GEMINI_OVERLOAD_BASE_DELAY_SECONDS
     s3_endpoint_url: str | None = None
     s3_region: str = "us-east-1"
     s3_bucket: str | None = None
@@ -112,59 +151,16 @@ class Settings:
         )
 
 
-def _parse_int(name: str, default: int, *, minimum: int = 1) -> int:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return max(minimum, value)
-
-
-def _parse_int_min0(name: str, default: int) -> int:
-    """Like ``_parse_int`` but allows zero (e.g. disable optional retries)."""
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return max(0, value)
-
-
-def _parse_float(name: str, default: float, *, minimum: float = 0.0) -> float:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    return max(minimum, value)
-
-
-def _parse_bool(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     api_key = (
         os.environ.get("GEMINI_API_KEY", "").strip()
         or os.environ.get("GOOGLE_API_KEY", "").strip()
     )
-    model_raw = os.environ.get("GEMINI_MODEL", "").strip()
-    model = model_raw if model_raw else DEFAULT_GEMINI_MODEL
     database_url = _resolve_database_url()
+
     s3_endpoint = os.environ.get("S3_ENDPOINT_URL", "").strip() or None
     s3_region_raw = os.environ.get("S3_REGION", "").strip().lower()
-    # Boto expects a concrete region string; "auto" is common from providers — use stable default for signing.
     s3_region = (
         os.environ.get("S3_REGION", "").strip()
         if s3_region_raw and s3_region_raw != "auto"
@@ -176,21 +172,29 @@ def get_settings() -> Settings:
 
     return Settings(
         gemini_api_key=api_key,
-        gemini_model=model,
+        gemini_model=GEMINI_MODEL_ANSWER,
+        gemini_validation_model=GEMINI_MODEL_VALIDATION,
         database_url=database_url,
-        log_level=_normalize_log_level(os.environ.get("LOG_LEVEL")),
-        cors_origins=_parse_origins(os.environ.get("CORS_ORIGINS")),
-        answer_concurrency=_parse_int("ANSWER_CONCURRENCY", 1),
-        answer_inter_call_delay_seconds=_parse_float(
-            "ANSWER_INTER_CALL_DELAY_SECONDS", 0.0
-        ),
-        validation_concurrency=_parse_int("VALIDATION_CONCURRENCY", 2),
-        validation_attach_documents=_parse_bool("VALIDATION_ATTACH_DOCUMENTS", False),
-        enable_prompt_caching=_parse_bool("ENABLE_PROMPT_CACHING", True),
-        overload_extra_attempts=_parse_int_min0("GEMINI_OVERLOAD_EXTRA_ATTEMPTS", 3),
-        overload_base_delay_seconds=_parse_float(
-            "GEMINI_OVERLOAD_BASE_DELAY_SECONDS", 10.0, minimum=1.0
-        ),
+        log_level=LOG_LEVEL,
+        cors_origins=list(CORS_ALLOWED_ORIGINS),
+        answer_concurrency=ANSWER_CONCURRENCY,
+        answer_inter_call_delay_seconds=ANSWER_INTER_CALL_DELAY_SECONDS,
+        validation_concurrency=VALIDATION_CONCURRENCY,
+        validation_attach_documents=VALIDATION_ATTACH_DOCUMENTS,
+        validation_max_pdf_bytes=VALIDATION_MAX_PDF_BYTES,
+        validation_max_image_bytes=VALIDATION_MAX_IMAGE_BYTES,
+        validation_max_total_text_chars=VALIDATION_MAX_TOTAL_TEXT_CHARS,
+        validation_max_text_preview_chars=VALIDATION_MAX_TEXT_PREVIEW_CHARS,
+        validation_max_native_parts_per_request=VALIDATION_MAX_NATIVE_PARTS_PER_REQUEST,
+        validation_max_pages_per_pdf_slice=VALIDATION_MAX_PAGES_PER_PDF_SLICE,
+        validation_text_chunk_chars=VALIDATION_TEXT_CHUNK_CHARS,
+        validation_use_chunk_retrieval=VALIDATION_USE_CHUNK_RETRIEVAL,
+        validation_retrieval_chunk_target_chars=VALIDATION_RETRIEVAL_CHUNK_TARGET_CHARS,
+        validation_retrieval_top_chunks=VALIDATION_RETRIEVAL_TOP_CHUNKS,
+        validation_retrieval_recall_chunks=VALIDATION_RETRIEVAL_RECALL_CHUNKS,
+        enable_prompt_caching=ENABLE_PROMPT_CACHING,
+        overload_extra_attempts=GEMINI_OVERLOAD_EXTRA_ATTEMPTS,
+        overload_base_delay_seconds=GEMINI_OVERLOAD_BASE_DELAY_SECONDS,
         s3_endpoint_url=s3_endpoint,
         s3_region=s3_region if s3_region else "us-east-1",
         s3_bucket=s3_bucket,

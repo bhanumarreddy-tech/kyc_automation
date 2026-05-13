@@ -66,6 +66,12 @@ def _ext_of(name: str) -> str:
     return name[dot:] if dot != -1 else ""
 
 
+def parse_pdf_bytes(filename: str, data: bytes) -> ParsedDocument:
+    """Parse PDF bytes into a :class:`ParsedDocument` (public entry for slicing)."""
+
+    return _parse_pdf(filename, data)
+
+
 def _parse_pdf(filename: str, data: bytes) -> ParsedDocument:
     try:
         reader = PdfReader(io.BytesIO(data))

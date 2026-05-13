@@ -409,7 +409,8 @@ async def answer_section(
         "section %d (%s): exhausted answer schema retries; returning empty rows. "
         "branch=schema_retries_exhausted last_turn=[%s] answer_text_chars=%d "
         "structured_json_schema=%s. If last_turn shows finish_reason=OTHER, "
-        "parts=0, or web_queries=0 repeatedly, switch GEMINI_MODEL to a Gemini 3 "
+        "parts=0, or web_queries=0 repeatedly, set GEMINI_MODEL_ANSWER in "
+        "app/config.py to a Gemini 3 "
         "id (see .env.example). Set LOG_LEVEL=DEBUG for parse detail.",
         section_no,
         section_name,
