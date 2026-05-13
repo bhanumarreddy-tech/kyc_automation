@@ -22,6 +22,7 @@ from app.schemas import KYCRow, SourceLink, ValidationSource
 from app.services.answer_section import AnsweredQuestion, answer_section
 from app.services.documents import parse_documents
 from app.services.reference_urls import ingest_reference_urls
+from app.services.source_urls import sanitize_answer_sources_urls
 from app.services.validate_section import ValidationResult, validate_section
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,8 @@ async def run_pipeline(
     answers_per_section: list[list[AnsweredQuestion]] = await asyncio.gather(
         *answer_tasks, return_exceptions=False
     )
+
+    await sanitize_answer_sources_urls(answers_per_section, settings)
 
     validation_tasks = [
         _bounded_validate(

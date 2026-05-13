@@ -22,6 +22,7 @@ from app.services.gemini_client import (
     generate_content_with_overload_retry,
     get_client,
     google_search_tools,
+    merge_answer_sources_with_grounding_metadata,
     parse_json_response,
     summarise_response_for_logs,
 )
@@ -62,6 +63,14 @@ _SYSTEM_PROMPT = (
     "  company's own website / investor-relations pages, regulatory "
     "  filings, and reputable news outlets. Avoid Wikipedia and forum "
     "  posts as the sole source for a fact.\n"
+    "- SEC EDGAR links: prefer "
+    "  https://www.sec.gov/Archives/edgar/... URLs over any "
+    "  *.s3.amazonaws.com or raw storage mirror. Copy exhibit "
+    "  URLs verbatim from search results — never invent or guess exhibit "
+    "  filenames (e.g. dex33.htm). When unsure of the exact exhibit path, "
+    "  cite the filing index page for that accession ({accession}-index.htm "
+    "  under the accession folder on www.sec.gov/Archives/edgar/data/) "
+    "  rather than a guessed document URL.\n"
     "- Every factual answer (anything other than the exact literals "
     "  \"Not found\" or \"Not relevant\") MUST be supported by at least "
     "  one search result that you actually retrieved this turn, and "
@@ -137,7 +146,10 @@ _RESPONSE_FORMAT_INSTRUCTIONS = (
     "  ]\n"
     "}\n"
     "Include exactly one entry per question. Only list sources you "
-    "actually used to support the answer. Reminder: the 'answer' field "
+    "actually used to support the answer. For SEC filings use "
+    "www.sec.gov/Archives/edgar/ URLs only (not S3 mirrors); paste URLs "
+    "exactly as returned by search.\n"
+    "Reminder: the 'answer' field "
     "must not restate the company name or the question, and must not "
     "begin with filler phrases such as 'The company...', 'It is...', or "
     "'The X is...'."
@@ -372,6 +384,11 @@ async def answer_section(
         last_response = response
         parsed = _try_parse_answer_payload(response, questions)
         if parsed is not None:
+            parsed = merge_answer_sources_with_grounding_metadata(
+                parsed,
+                response,
+                enabled=settings.answer_sources_use_grounding_metadata,
+            )
             return _apply_declarations_public_notice(section_no, parsed)
 
         logger.debug(

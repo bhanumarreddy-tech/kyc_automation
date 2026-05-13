@@ -8,8 +8,10 @@ import json
 import logging
 import random
 import re
+from dataclasses import replace
 from functools import lru_cache
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from google import genai
 from google.genai import errors, types
@@ -17,6 +19,9 @@ from google.genai import errors, types
 from app.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
+
+_SERIAL_NO_JSON_RE = re.compile(r'"serial_no"\s*:\s*(\d+)')
+_GROUNDING_FALLBACK_CHUNK_CAP = 8
 
 
 @lru_cache(maxsize=1)
@@ -252,6 +257,189 @@ def count_grounding_web_queries(response: types.GenerateContentResponse) -> int:
     if isinstance(queries, list):
         return len(queries)
     return 0
+
+
+def normalize_source_url_for_match(url: str) -> str:
+    """Normalize HTTP(S) URLs for allowlist comparisons."""
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    scheme = (parsed.scheme or "https").lower()
+    host = (parsed.hostname or "").lower()
+    path = parsed.path or ""
+    if len(path) > 1 and path.endswith("/"):
+        path = path.rstrip("/")
+    return urlunparse((scheme, host, path, "", "", "")).lower()
+
+
+def _dedupe_web_sources(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for r in rows:
+        u = str(r.get("url") or "").strip()
+        if not u:
+            continue
+        key = normalize_source_url_for_match(u)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        title = str(r.get("title") or "").strip() or u
+        out.append({"title": title, "url": u})
+    return out
+
+
+def extract_grounding_web_sources_from_chunks(
+    response: types.GenerateContentResponse,
+) -> list[dict[str, str]]:
+    """Ordered unique ``{title, url}`` pairs from ``grounding_chunks`` web URIs."""
+    candidates = response.candidates or []
+    if not candidates:
+        return []
+    gm = getattr(candidates[0], "grounding_metadata", None)
+    if gm is None:
+        return []
+    chunks = getattr(gm, "grounding_chunks", None) or []
+    rows: list[dict[str, str]] = []
+    for ch in chunks:
+        web = getattr(ch, "web", None)
+        if web is None:
+            continue
+        uri = str(getattr(web, "uri", None) or "").strip()
+        if not uri:
+            continue
+        title = str(getattr(web, "title", None) or "").strip() or uri
+        rows.append({"title": title, "url": uri})
+    return _dedupe_web_sources(rows)
+
+
+def grounding_sources_by_serial_no(
+    response: types.GenerateContentResponse,
+    *,
+    lookback_chars: int = 6000,
+) -> dict[int, list[dict[str, str]]]:
+    """Infer ``serial_no`` from JSON offsets in grounding_support segments."""
+    out: dict[int, list[dict[str, str]]] = {}
+    candidates = response.candidates or []
+    if not candidates:
+        return out
+    gm = getattr(candidates[0], "grounding_metadata", None)
+    if gm is None:
+        return out
+    chunks = getattr(gm, "grounding_chunks", None) or []
+    supports = getattr(gm, "grounding_supports", None) or []
+    full_text = extract_text(response)
+    if not full_text.strip():
+        return out
+
+    def urls_for_chunk_indices(indices: object) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        if not isinstance(indices, list):
+            return rows
+        for raw_idx in indices:
+            try:
+                idx = int(raw_idx)
+            except (TypeError, ValueError):
+                continue
+            if idx < 0 or idx >= len(chunks):
+                continue
+            web = getattr(chunks[idx], "web", None)
+            if web is None:
+                continue
+            uri = str(getattr(web, "uri", None) or "").strip()
+            if not uri:
+                continue
+            title = str(getattr(web, "title", None) or "").strip() or uri
+            rows.append({"title": title, "url": uri})
+        return rows
+
+    for sup in supports:
+        seg = getattr(sup, "segment", None)
+        start_raw = getattr(seg, "start_index", None) if seg is not None else None
+        if start_raw is None:
+            continue
+        try:
+            si = int(start_raw)
+        except (TypeError, ValueError):
+            continue
+        prefix_start = max(0, si - lookback_chars)
+        prefix = full_text[prefix_start:si]
+        matches = list(_SERIAL_NO_JSON_RE.finditer(prefix))
+        if not matches:
+            continue
+        try:
+            serial = int(matches[-1].group(1))
+        except (ValueError, IndexError):
+            continue
+        idxs = getattr(sup, "grounding_chunk_indices", None)
+        for row in urls_for_chunk_indices(idxs):
+            out.setdefault(serial, []).append(row)
+
+    for serial in list(out.keys()):
+        out[serial] = _dedupe_web_sources(out[serial])
+    return out
+
+
+def merge_answer_sources_with_grounding_metadata(
+    answered: list[Any],
+    response: types.GenerateContentResponse,
+    *,
+    enabled: bool,
+) -> list[Any]:
+    """Prefer Google Search grounding chunk URLs over unconstrained model citations.
+
+    When enabled and grounding chunks exist: keep only model URLs that appear in those
+    chunks, prepend URLs mapped via ``grounding_supports`` → ``serial_no`` heuristics,
+    and fall back to the global chunk list for factual rows so citations stay real."""
+    if not enabled:
+        return answered
+
+    chunk_sources = extract_grounding_web_sources_from_chunks(response)
+    if not chunk_sources:
+        return answered
+
+    allow = {normalize_source_url_for_match(s["url"]) for s in chunk_sources}
+    by_serial = grounding_sources_by_serial_no(response)
+
+    merged: list[Any] = []
+    for aq in answered:
+        serial_raw = getattr(aq, "serial_no", None)
+        answer_text = str(getattr(aq, "answer", "") or "").strip()
+        sentinel = answer_text in ("", "Not found", "Not relevant")
+
+        if sentinel:
+            merged.append(replace(aq, sources=[]))
+            continue
+
+        sid: int | None
+        try:
+            sid = int(serial_raw) if serial_raw is not None else None
+        except (TypeError, ValueError):
+            sid = None
+
+        hinted = _dedupe_web_sources(list(by_serial.get(sid, [])) if sid is not None else [])
+
+        raw_sources = getattr(aq, "sources", None) or []
+        model_kept: list[dict[str, str]] = []
+        if isinstance(raw_sources, list):
+            for src in raw_sources:
+                if not isinstance(src, dict):
+                    continue
+                u = str(src.get("url") or "").strip()
+                if not u:
+                    continue
+                if normalize_source_url_for_match(u) not in allow:
+                    continue
+                title = str(src.get("title") or "").strip() or u
+                model_kept.append({"title": title, "url": u})
+
+        combined = _dedupe_web_sources([*hinted, *model_kept])
+        if not combined:
+            combined = _dedupe_web_sources(chunk_sources[:_GROUNDING_FALLBACK_CHUNK_CAP])
+
+        merged.append(replace(aq, sources=combined))
+
+    return merged
 
 
 def summarise_response_for_logs(response: types.GenerateContentResponse) -> str:

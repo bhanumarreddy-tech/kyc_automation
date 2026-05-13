@@ -75,6 +75,15 @@ REFERENCE_URL_MAX_TEXT_CHARS = 120_000  # per URL after extraction/truncation
 REFERENCE_URL_FETCH_CONTACT = ""
 REFERENCE_URL_FETCH_USER_AGENT: str | None = None
 
+# Gemini citation URLs (Sources column): normalize SEC S3 mirrors; optional HTTP verify.
+SOURCE_URL_VERIFY_ENABLED = False
+SOURCE_URL_VERIFY_TIMEOUT_SECONDS = 15.0
+SOURCE_URL_VERIFY_MAX_URLS = 250  # deduped probes per submission; 0 = unlimited
+
+# Replace model-provided citation URLs with/intersect against Gemini Google Search grounding
+# chunk URIs so Sources reflect URLs the API actually retrieved (when chunks are present).
+ANSWER_SOURCES_USE_GROUNDING_METADATA = True
+
 
 # Railway Postgres — non-secret connection defaults (match Railway Postgres plugin outputs).
 # Password comes only from env (DATABASE_PASSWORD / POSTGRES_PASSWORD / PGPASSWORD).
@@ -101,6 +110,15 @@ def _postgres_password() -> str:
         or os.environ.get("POSTGRES_PASSWORD", "").strip()
         or os.environ.get("PGPASSWORD", "").strip()
     )
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return default
 
 
 def _resolve_database_url() -> str | None:
@@ -164,6 +182,10 @@ class Settings:
     reference_url_max_text_chars: int = REFERENCE_URL_MAX_TEXT_CHARS
     reference_url_fetch_contact: str = REFERENCE_URL_FETCH_CONTACT
     reference_url_fetch_user_agent: str | None = REFERENCE_URL_FETCH_USER_AGENT
+    source_url_verify_enabled: bool = SOURCE_URL_VERIFY_ENABLED
+    source_url_verify_timeout_seconds: float = SOURCE_URL_VERIFY_TIMEOUT_SECONDS
+    source_url_verify_max_urls: int = SOURCE_URL_VERIFY_MAX_URLS
+    answer_sources_use_grounding_metadata: bool = ANSWER_SOURCES_USE_GROUNDING_METADATA
 
     def s3_ready(self) -> bool:
         return bool(
@@ -199,6 +221,11 @@ def get_settings() -> Settings:
     )
     ref_ua_raw = os.environ.get("REFERENCE_URL_FETCH_USER_AGENT", "").strip()
     ref_ua = ref_ua_raw if ref_ua_raw else REFERENCE_URL_FETCH_USER_AGENT
+
+    src_verify_raw = os.environ.get("SOURCE_URL_VERIFY_MAX_URLS", "").strip()
+    src_verify_max = SOURCE_URL_VERIFY_MAX_URLS
+    if src_verify_raw.isdigit():
+        src_verify_max = int(src_verify_raw)
 
     return Settings(
         gemini_api_key=api_key,
@@ -237,4 +264,19 @@ def get_settings() -> Settings:
         reference_url_max_text_chars=REFERENCE_URL_MAX_TEXT_CHARS,
         reference_url_fetch_contact=ref_contact,
         reference_url_fetch_user_agent=ref_ua,
+        source_url_verify_enabled=_env_bool(
+            "SOURCE_URL_VERIFY_ENABLED", SOURCE_URL_VERIFY_ENABLED
+        ),
+        source_url_verify_timeout_seconds=float(
+            os.environ.get(
+                "SOURCE_URL_VERIFY_TIMEOUT_SECONDS",
+                str(SOURCE_URL_VERIFY_TIMEOUT_SECONDS),
+            )
+            or SOURCE_URL_VERIFY_TIMEOUT_SECONDS
+        ),
+        source_url_verify_max_urls=src_verify_max,
+        answer_sources_use_grounding_metadata=_env_bool(
+            "ANSWER_SOURCES_USE_GROUNDING_METADATA",
+            ANSWER_SOURCES_USE_GROUNDING_METADATA,
+        ),
     )
