@@ -545,7 +545,11 @@ export default function KYCAutomation() {
                 <Label htmlFor="referenceUrls">Reference URLs (optional)</Label>
                 <Textarea
                   id="referenceUrls"
-                  placeholder={"https://www.sec.gov/...\nOne http(s) URL per line"}
+                  placeholder={
+                    "https://data.sec.gov/submissions/CIK##########.json\n" +
+                    "https://www.sec.gov/edgar/browse/?CIK=... (browse URLs rewrite to submissions JSON)\n" +
+                    "One http(s) URL per line"
+                  }
                   value={referenceUrlsText}
                   onChange={(e) => setReferenceUrlsText(e.target.value)}
                   className="min-h-[100px] resize-y font-mono text-sm"

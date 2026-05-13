@@ -67,7 +67,8 @@ REFERENCE_URL_FETCH_TIMEOUT_SECONDS = 30.0
 REFERENCE_URL_MAX_REDIRECTS = 5
 REFERENCE_URL_MAX_TEXT_CHARS = 120_000  # per URL after extraction/truncation
 
-# Outbound HTTP identity for reference URL fetches (Wikimedia / bot policies).
+# Outbound HTTP identity for reference URL fetches: generic sites follow Wikimedia
+# UA policy (*.sec.gov / data.sec.gov use EDGAR fair-access UA when CONTACT is set).
 # Set REFERENCE_URL_FETCH_CONTACT to a project URL and/or email, e.g.
 #   https://example.com/kyc-bot; ops@example.com
 # Optional REFERENCE_URL_FETCH_USER_AGENT overrides the full header.

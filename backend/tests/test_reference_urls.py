@@ -11,6 +11,7 @@ from app.services.reference_urls import (
     ingest_reference_urls,
     normalize_reference_urls,
     reference_fetch_user_agent,
+    rewrite_sec_edgar_browse_to_submissions_api,
     validate_reference_urls_for_request,
 )
 
@@ -22,6 +23,7 @@ def _clear_settings_cache() -> None:
 @pytest.fixture
 def settings(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("REFERENCE_URL_FETCH_USER_AGENT", raising=False)
     _clear_settings_cache()
     return get_settings()
 
@@ -92,6 +94,7 @@ async def test_fetch_html_to_text(settings, monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_reference_fetch_user_agent_includes_contact(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("REFERENCE_URL_FETCH_USER_AGENT", raising=False)
     monkeypatch.setenv("REFERENCE_URL_FETCH_CONTACT", "https://ops.example/kyc; team@example.com")
     _clear_settings_cache()
     s = get_settings()
@@ -108,7 +111,75 @@ def test_reference_fetch_user_agent_env_override(monkeypatch: pytest.MonkeyPatch
     _clear_settings_cache()
     s = get_settings()
     assert reference_fetch_user_agent(s) == "MyOverride/2.0 (custom)"
+    assert reference_fetch_user_agent(s, "https://data.sec.gov/x") == "MyOverride/2.0 (custom)"
     _clear_settings_cache()
+
+
+def test_reference_fetch_user_agent_sec_uses_plain_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("REFERENCE_URL_FETCH_USER_AGENT", raising=False)
+    monkeypatch.setenv("REFERENCE_URL_FETCH_CONTACT", "https://example.com/contact")
+    _clear_settings_cache()
+    s = get_settings()
+    ua = reference_fetch_user_agent(s, "https://data.sec.gov/submissions/CIK1.json")
+    assert ua == "KYC-Automation https://example.com/contact"
+    _clear_settings_cache()
+
+
+def test_reference_fetch_user_agent_sec_prefers_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("REFERENCE_URL_FETCH_USER_AGENT", raising=False)
+    monkeypatch.setenv(
+        "REFERENCE_URL_FETCH_CONTACT",
+        "https://ops.example/kyc; edgar-admin@filings.example",
+    )
+    _clear_settings_cache()
+    s = get_settings()
+    ua = reference_fetch_user_agent(s, "https://www.sec.gov/")
+    assert ua == "KYC-Automation edgar-admin@filings.example"
+    _clear_settings_cache()
+
+
+@pytest.mark.parametrize(
+    ("browse", "expected"),
+    [
+        (
+            "https://www.sec.gov/edgar/browse/?CIK=0000073309",
+            "https://data.sec.gov/submissions/CIK0000073309.json",
+        ),
+        (
+            "https://SEC.gov/Edgar/Browse/?cik=73309",
+            "https://data.sec.gov/submissions/CIK0000073309.json",
+        ),
+        ("https://www.sec.gov/edgar/other/?CIK=1", "https://www.sec.gov/edgar/other/?CIK=1"),
+        ("https://example.com/", "https://example.com/"),
+    ],
+)
+def test_rewrite_sec_edgar_browse(browse: str, expected: str) -> None:
+    assert rewrite_sec_edgar_browse_to_submissions_api(browse) == expected
+
+
+@pytest.mark.asyncio
+async def test_fetch_rewrites_sec_browse_then_requests_api(
+    settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EDGAR browse URLs should hit submissions JSON endpoint (citation preserves original URL)."""
+
+    fetched: dict[str, str] = {}
+
+    async def _fake_fetch(client, url, max_bytes):  # noqa: ANN001
+        fetched["url"] = url
+        return (
+            200,
+            {"content-type": "application/json"},
+            b'{"cik": "0000073309", "tickers": []}',
+        )
+
+    monkeypatch.setattr("app.services.reference_urls._fetch_body_capped", _fake_fetch)
+    browse = "https://www.sec.gov/edgar/browse/?CIK=73309"
+    doc = await fetch_one_reference_url(browse, settings)
+    assert fetched["url"] == "https://data.sec.gov/submissions/CIK0000073309.json"
+    assert browse in doc.text or browse in doc.extra.get("source_url", "")
 
 
 def test_enrich_validation_results_urls_fills_link() -> None:

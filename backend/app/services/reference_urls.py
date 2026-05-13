@@ -10,7 +10,7 @@ import ipaddress
 import logging
 import re
 import socket
-from urllib.parse import urldefrag, urlparse
+from urllib.parse import parse_qs, urldefrag, urlparse
 
 import httpx
 import trafilatura
@@ -21,15 +21,58 @@ from app.services.documents import ParsedDocument, parse_pdf_bytes
 logger = logging.getLogger(__name__)
 
 _PDF_MAGIC = b"%PDF"
+_REF_EMAIL_RE = re.compile(
+    r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+)
 
 
-def reference_fetch_user_agent(settings: Settings) -> str:
-    """Build a Wikimedia-style User-Agent (framework id + contact in parentheses)."""
+def rewrite_sec_edgar_browse_to_submissions_api(url: str) -> str:
+    """Map www.sec.gov EDGAR HTML browse URLs to data.sec.gov JSON submissions API."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in ("www.sec.gov", "sec.gov"):
+        return url
+    segs = [p for p in parsed.path.split("/") if p]
+    if len(segs) < 2 or [s.lower() for s in segs[-2:]] != ["edgar", "browse"]:
+        return url
+    qs = parse_qs(parsed.query, keep_blank_values=False)
+    cik_raw = None
+    for key, vals in qs.items():
+        if key.upper() == "CIK" and vals:
+            cik_raw = (vals[0] or "").strip()
+            break
+    if not cik_raw:
+        return url
+    digits = "".join(c for c in cik_raw if c.isdigit())
+    if not digits:
+        return url
+    cik_pad = f"{int(digits):010d}"
+    return f"https://data.sec.gov/submissions/CIK{cik_pad}.json"
+
+
+def _host_is_sec_gov(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    h = hostname.lower()
+    return h == "sec.gov" or h.endswith(".sec.gov")
+
+
+def _sec_identity_token_from_contact(contact: str) -> str:
+    mail = _REF_EMAIL_RE.search(contact)
+    return (mail.group(0) if mail else contact).strip()
+
+
+def reference_fetch_user_agent(settings: Settings, request_url: str | None = None) -> str:
+    """Build outbound User-Agent: SEC (*.sec.gov) fair-access vs Wikimedia-style default."""
     custom = (settings.reference_url_fetch_user_agent or "").strip()
     if custom:
         return custom
     contact = (settings.reference_url_fetch_contact or "").strip()
     ver = httpx.__version__
+    rq_host = urlparse(request_url).hostname if request_url else None
+    if contact and _host_is_sec_gov(rq_host):
+        token = _sec_identity_token_from_contact(contact)
+        return f"KYC-Automation {token}"
     if contact:
         return f"KYC-Automation/1.0 (python-httpx/{ver}; {contact})"
     logger.warning(
@@ -187,14 +230,19 @@ def _html_to_text(html: bytes, url: str) -> str:
 
 async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocument:
     """Fetch a single URL and return a :class:`ParsedDocument` (never raises for network errors)."""
-    display = _citation_filename(url)
-    prefix_lines = [f"Source URL: {url}"] if display != url else []
-    ref_extra = {"source_url": url}
+    citation_url = url
+    effective_url = rewrite_sec_edgar_browse_to_submissions_api(url)
+    display = _citation_filename(citation_url)
+    if display != citation_url or effective_url != citation_url:
+        prefix_lines = [f"Source URL: {citation_url}"]
+    else:
+        prefix_lines = []
+    ref_extra = {"source_url": citation_url}
 
-    safe, reason = assert_url_safe_for_ssrf(url)
+    safe, reason = assert_url_safe_for_ssrf(effective_url)
     if not safe:
         msg = f"URL blocked ({reason})"
-        logger.info("reference URL rejected %s: %s", url, msg)
+        logger.info("reference URL rejected %s: %s", citation_url, msg)
         return ParsedDocument(
             filename=display,
             kind="other",
@@ -215,17 +263,18 @@ async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocumen
             limits=limits,
             max_redirects=settings.reference_url_max_redirects,
             headers={
-                "User-Agent": reference_fetch_user_agent(settings),
-                "Accept": "text/html,application/pdf,text/plain;q=0.9,*/*;q=0.1",
+                "Accept-Encoding": "gzip, deflate",
+                "User-Agent": reference_fetch_user_agent(settings, effective_url),
+                "Accept": "application/json,text/html,application/pdf,text/plain;q=0.9,*/*;q=0.1",
             },
         ) as client:
             status, headers, body = await _fetch_body_capped(
                 client,
-                url,
+                effective_url,
                 settings.reference_url_max_response_bytes,
             )
     except httpx.HTTPError as exc:
-        logger.warning("reference URL fetch failed %s: %s", url, exc)
+        logger.warning("reference URL fetch failed %s: %s", citation_url, exc)
         msg = f"HTTP error: {exc}"
         return ParsedDocument(
             filename=display,
@@ -238,7 +287,7 @@ async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocumen
 
     if status >= 400:
         msg = f"HTTP status {status}"
-        logger.info("reference URL bad status %s: %s", url, msg)
+        logger.info("reference URL bad status %s: %s", citation_url, msg)
         return ParsedDocument(
             filename=display,
             kind="other",
@@ -257,8 +306,22 @@ async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocumen
             doc.text = "\n".join(prefix_lines) + "\n\n" + doc.text
         elif prefix_lines and not doc.text.strip():
             doc.text = "\n".join(prefix_lines)
-        doc.extra = {**doc.extra, "source_url": url}
+        doc.extra = {**doc.extra, "source_url": citation_url}
         return doc
+
+    json_like = ctype == "application/json" or ctype.endswith("+json")
+    if json_like:
+        text = body.decode("utf-8", errors="replace").strip()
+        text = _truncate_text(text, settings.reference_url_max_text_chars)
+        if prefix_lines:
+            text = "\n".join(prefix_lines) + "\n\n" + text
+        return ParsedDocument(
+            filename=display,
+            kind="other",
+            raw_bytes=body,
+            text=text,
+            extra=dict(ref_extra),
+        )
 
     if ctype in ("text/plain", "text/markdown") or "text/" in ctype:
         text = body.decode("utf-8", errors="replace").strip()
@@ -274,7 +337,7 @@ async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocumen
         )
 
     # HTML and unknown types: try HTML extraction
-    text = _html_to_text(body, url)
+    text = _html_to_text(body, effective_url)
     text = _truncate_text(text, settings.reference_url_max_text_chars)
     if prefix_lines:
         text = "\n".join(prefix_lines) + "\n\n" + text
