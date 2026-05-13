@@ -144,6 +144,7 @@ const validationSourcesToText = (sources: ValidationSource[]): string =>
   sources
     .map((s) => {
       const parts = [s.document];
+      if (s.url?.trim()) parts.push(s.url.trim());
       if (typeof s.page === "number") parts.push(`p.${s.page}`);
       if (s.excerpt) parts.push(s.excerpt);
       return parts.join(" | ");
@@ -550,6 +551,18 @@ export function ResultsTable({
           row.validationSources.map((src, idx) => (
             <div key={idx} className="text-xs">
               <span className="font-medium">{src.document}</span>
+              {src.url?.trim() && (
+                <div className="mt-0.5">
+                  <a
+                    href={src.url.trim()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary underline break-all"
+                  >
+                    {src.url.trim()}
+                  </a>
+                </div>
+              )}
               {typeof src.page === "number" && (
                 <span className="text-muted-foreground"> (p.{src.page})</span>
               )}

@@ -51,6 +51,7 @@ KYC_VALIDATION_RESPONSE_JSON_SCHEMA: dict = {
                                 "document": {"type": "string"},
                                 "page": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
                                 "excerpt": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                                "url": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                             },
                             "required": ["document"],
                         },

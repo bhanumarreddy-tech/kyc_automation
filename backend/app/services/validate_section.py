@@ -51,8 +51,9 @@ _SYSTEM_PROMPT = (
     "whether those materials directly support it. Be strict: only answer "
     "'Yes' when there is clear, on-page evidence in the materials. "
     "When 'Yes', cite the specific document filename (or web URL title/filename "
-    "exactly as provided) and (where possible) a page number and short "
-    "verbatim excerpt that supports the answer.\n"
+    "exactly as provided), the full source link for user-fetched web pages in "
+    "the \"url\" field when applicable, and (where possible) a page number and "
+    "short verbatim excerpt that supports the answer.\n"
     "\n"
     "Matching rules:\n"
     "- Fact-style answers (registration numbers, TINs, addresses, dates, "
@@ -86,7 +87,8 @@ _RESPONSE_FORMAT_INSTRUCTIONS = (
     "        {\n"
     '          "document": <string, original filename>,\n'
     '          "page": <integer or null>,\n'
-    '          "excerpt": <short verbatim quote or null>\n'
+    '          "excerpt": <short verbatim quote or null>,\n'
+    '          "url": <full http(s) link when evidence is from a user-supplied reference URL; otherwise null>\n'
     "        }\n"
     "      ]\n"
     "    }\n"
@@ -95,7 +97,9 @@ _RESPONSE_FORMAT_INSTRUCTIONS = (
     "Include exactly one entry per question. When validation is 'No', the "
     "validation_sources list must be empty. Use the exact document / URL "
     "identifier strings as provided in this request (filenames, URLs, or "
-    "web-* placeholders)."
+    "web-* placeholders). When evidence is from content fetched from a "
+    "user-supplied reference URL, include that full URL in the \"url\" field "
+    "(and the matching \"document\" label from the materials).\n"
 )
 
 
@@ -280,11 +284,18 @@ def _normalise_sources(raw: Any, known_documents: set[str]) -> list[dict[str, An
             if isinstance(excerpt_raw, str) and excerpt_raw.strip()
             else None
         )
+        url_raw = src.get("url")
+        url_val = (
+            url_raw.strip()
+            if isinstance(url_raw, str) and url_raw.strip()
+            else None
+        )
         out.append(
             {
                 "document": document,
                 "page": page,
                 "excerpt": excerpt,
+                "url": url_val,
                 "_known": document in known_documents,
             }
         )
@@ -316,6 +327,7 @@ def _merge_shard_validation_results(
                         s.get("document"),
                         s.get("page"),
                         (s.get("excerpt") or "")[:200],
+                        (s.get("url") or "")[:500],
                     )
                     if key in seen:
                         continue
@@ -337,6 +349,47 @@ def _merge_shard_validation_results(
                 ValidationResult(serial_no=q.serial_no, validation="", validation_sources=[])
             )
     return merged
+
+
+def _source_url_index(*doc_lists: list[ParsedDocument]) -> dict[str, str]:
+    """Map material labels (filename, chunk labels, orig_filename) to fetched URL."""
+    idx: dict[str, str] = {}
+    for docs in doc_lists:
+        for d in docs:
+            u = (d.extra or {}).get("source_url")
+            if not isinstance(u, str) or not u.strip():
+                continue
+            u = u.strip()
+            idx[d.filename] = u
+            orig = (d.extra or {}).get("orig_filename")
+            if isinstance(orig, str) and orig.strip():
+                idx.setdefault(orig.strip(), u)
+    return idx
+
+
+def _enrich_validation_results_urls(
+    results: list[ValidationResult],
+    url_by_document: dict[str, str],
+) -> list[ValidationResult]:
+    if not url_by_document:
+        return results
+    enriched: list[ValidationResult] = []
+    for vr in results:
+        if vr.validation != "Yes":
+            enriched.append(vr)
+            continue
+        new_sources: list[dict[str, Any]] = []
+        for s in vr.validation_sources:
+            dct = dict(s)
+            u = dct.get("url")
+            if not (isinstance(u, str) and u.strip()):
+                key = str(dct.get("document") or "").strip()
+                fb = url_by_document.get(key)
+                if fb:
+                    dct["url"] = fb
+            new_sources.append(dct)
+        enriched.append(ValidationResult(vr.serial_no, vr.validation, new_sources))
+    return enriched
 
 
 def _parse_validation_payload(
@@ -608,6 +661,7 @@ async def validate_section(
         )
 
     merged = _merge_shard_validation_results(shard_results, questions)
+    recall_docs_for_url_index: list[ParsedDocument] = []
 
     if retrieval_used_flag and not _globally_has_yes(merged):
         wider = retrieval_selected_documents(
@@ -655,6 +709,10 @@ async def validate_section(
             shard_results + recall_outputs,
             questions,
         )
+        recall_docs_for_url_index = natives_recall + wider
+
+    url_idx = _source_url_index(documents, prepared, recall_docs_for_url_index)
+    merged = _enrich_validation_results_urls(merged, url_idx)
 
     logger.info(
         "Validation section %d (%s) finished with merged model=%s shards=%s",

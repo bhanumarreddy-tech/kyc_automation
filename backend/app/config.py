@@ -67,6 +67,13 @@ REFERENCE_URL_FETCH_TIMEOUT_SECONDS = 30.0
 REFERENCE_URL_MAX_REDIRECTS = 5
 REFERENCE_URL_MAX_TEXT_CHARS = 120_000  # per URL after extraction/truncation
 
+# Outbound HTTP identity for reference URL fetches (Wikimedia / bot policies).
+# Set REFERENCE_URL_FETCH_CONTACT to a project URL and/or email, e.g.
+#   https://example.com/kyc-bot; ops@example.com
+# Optional REFERENCE_URL_FETCH_USER_AGENT overrides the full header.
+REFERENCE_URL_FETCH_CONTACT = ""
+REFERENCE_URL_FETCH_USER_AGENT: str | None = None
+
 
 # Railway Postgres — non-secret connection defaults (match Railway Postgres plugin outputs).
 # Password comes only from env (DATABASE_PASSWORD / POSTGRES_PASSWORD / PGPASSWORD).
@@ -154,6 +161,8 @@ class Settings:
     reference_url_fetch_timeout_seconds: float = REFERENCE_URL_FETCH_TIMEOUT_SECONDS
     reference_url_max_redirects: int = REFERENCE_URL_MAX_REDIRECTS
     reference_url_max_text_chars: int = REFERENCE_URL_MAX_TEXT_CHARS
+    reference_url_fetch_contact: str = REFERENCE_URL_FETCH_CONTACT
+    reference_url_fetch_user_agent: str | None = REFERENCE_URL_FETCH_USER_AGENT
 
     def s3_ready(self) -> bool:
         return bool(
@@ -182,6 +191,13 @@ def get_settings() -> Settings:
     s3_bucket = os.environ.get("S3_BUCKET", "").strip() or None
     s3_access = os.environ.get("S3_ACCESS_KEY_ID", "").strip() or None
     s3_secret = os.environ.get("S3_SECRET_ACCESS_KEY", "").strip() or None
+
+    ref_contact = (
+        os.environ.get("REFERENCE_URL_FETCH_CONTACT", "").strip()
+        or REFERENCE_URL_FETCH_CONTACT
+    )
+    ref_ua_raw = os.environ.get("REFERENCE_URL_FETCH_USER_AGENT", "").strip()
+    ref_ua = ref_ua_raw if ref_ua_raw else REFERENCE_URL_FETCH_USER_AGENT
 
     return Settings(
         gemini_api_key=api_key,
@@ -218,4 +234,6 @@ def get_settings() -> Settings:
         reference_url_fetch_timeout_seconds=REFERENCE_URL_FETCH_TIMEOUT_SECONDS,
         reference_url_max_redirects=REFERENCE_URL_MAX_REDIRECTS,
         reference_url_max_text_chars=REFERENCE_URL_MAX_TEXT_CHARS,
+        reference_url_fetch_contact=ref_contact,
+        reference_url_fetch_user_agent=ref_ua,
     )

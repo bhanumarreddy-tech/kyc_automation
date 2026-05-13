@@ -202,6 +202,7 @@ def expand_large_text_documents(
         logical_base = stem + suf
         total = len(chunks)
         for idx, txt in enumerate(chunks, start=1):
+            chunk_extra = {**(doc.extra or {}), "orig_filename": logical_base}
             out.append(
                 ParsedDocument(
                     filename=f"{logical_base} · text part {idx}/{total}",
@@ -210,7 +211,7 @@ def expand_large_text_documents(
                     media_type="",
                     text=txt,
                     pages=None,
-                    extra={"orig_filename": logical_base},
+                    extra=chunk_extra,
                 )
             )
 
@@ -325,6 +326,7 @@ def retrieval_selected_documents(
                 kind="other",
                 raw_bytes=b"",
                 text=ck,
+                extra=dict(doc.extra or {}),
             )
         )
         remaining -= len(ck) + 64

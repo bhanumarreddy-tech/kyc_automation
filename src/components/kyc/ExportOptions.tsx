@@ -38,6 +38,7 @@ const validationSourcesAsText = (row: KYCRow): string =>
   row.validationSources
     .map((s) => {
       const parts = [s.document];
+      if (s.url?.trim()) parts.push(s.url.trim());
       if (typeof s.page === "number") parts.push(`p.${s.page}`);
       if (s.excerpt) parts.push(`"${s.excerpt}"`);
       return parts.join(" ");

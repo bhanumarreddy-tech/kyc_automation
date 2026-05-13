@@ -25,6 +25,7 @@ class ValidationSource(BaseModel):
     document: str = ""
     excerpt: str | None = None
     page: int | None = None
+    url: str | None = None
 
 
 ValidationStatus = Literal["Yes", "No", ""]

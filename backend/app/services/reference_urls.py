@@ -23,6 +23,23 @@ logger = logging.getLogger(__name__)
 _PDF_MAGIC = b"%PDF"
 
 
+def reference_fetch_user_agent(settings: Settings) -> str:
+    """Build a Wikimedia-style User-Agent (framework id + contact in parentheses)."""
+    custom = (settings.reference_url_fetch_user_agent or "").strip()
+    if custom:
+        return custom
+    contact = (settings.reference_url_fetch_contact or "").strip()
+    ver = httpx.__version__
+    if contact:
+        return f"KYC-Automation/1.0 (python-httpx/{ver}; {contact})"
+    logger.warning(
+        "REFERENCE_URL_FETCH_CONTACT is unset; reference URL fetches use a "
+        "User-Agent without operator contact. Set REFERENCE_URL_FETCH_CONTACT "
+        "(project URL and/or email), per https://meta.wikimedia.org/wiki/User-Agent_policy"
+    )
+    return f"KYC-Automation/1.0 (python-httpx/{ver})"
+
+
 def normalize_reference_urls(raw: list[str]) -> list[str]:
     """Strip, drop empties, preserve first-seen order."""
     seen: set[str] = set()
@@ -172,6 +189,7 @@ async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocumen
     """Fetch a single URL and return a :class:`ParsedDocument` (never raises for network errors)."""
     display = _citation_filename(url)
     prefix_lines = [f"Source URL: {url}"] if display != url else []
+    ref_extra = {"source_url": url}
 
     safe, reason = assert_url_safe_for_ssrf(url)
     if not safe:
@@ -186,6 +204,7 @@ async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocumen
                 settings.reference_url_max_text_chars,
             ),
             error=msg,
+            extra=dict(ref_extra),
         )
 
     timeout = httpx.Timeout(settings.reference_url_fetch_timeout_seconds)
@@ -196,7 +215,7 @@ async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocumen
             limits=limits,
             max_redirects=settings.reference_url_max_redirects,
             headers={
-                "User-Agent": "KYC-Automation-Validator/1.0",
+                "User-Agent": reference_fetch_user_agent(settings),
                 "Accept": "text/html,application/pdf,text/plain;q=0.9,*/*;q=0.1",
             },
         ) as client:
@@ -214,6 +233,7 @@ async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocumen
             raw_bytes=b"",
             text="\n".join(prefix_lines + [f"[Fetch error] {msg}"]),
             error=msg,
+            extra=dict(ref_extra),
         )
 
     if status >= 400:
@@ -225,6 +245,7 @@ async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocumen
             raw_bytes=body,
             text="\n".join(prefix_lines + [f"[Fetch error] {msg}"]),
             error=msg,
+            extra=dict(ref_extra),
         )
 
     ctype = _content_type_from_headers(headers)
@@ -236,6 +257,7 @@ async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocumen
             doc.text = "\n".join(prefix_lines) + "\n\n" + doc.text
         elif prefix_lines and not doc.text.strip():
             doc.text = "\n".join(prefix_lines)
+        doc.extra = {**doc.extra, "source_url": url}
         return doc
 
     if ctype in ("text/plain", "text/markdown") or "text/" in ctype:
@@ -248,6 +270,7 @@ async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocumen
             kind="other",
             raw_bytes=body,
             text=text,
+            extra=dict(ref_extra),
         )
 
     # HTML and unknown types: try HTML extraction
@@ -260,6 +283,7 @@ async def fetch_one_reference_url(url: str, settings: Settings) -> ParsedDocumen
         kind="other",
         raw_bytes=body,
         text=text,
+        extra=dict(ref_extra),
     )
 
 

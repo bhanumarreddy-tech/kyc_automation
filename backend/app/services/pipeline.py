@@ -135,6 +135,7 @@ async def run_pipeline(
                 document=src.get("document") or "",
                 page=src.get("page"),
                 excerpt=src.get("excerpt"),
+                url=src.get("url"),
             )
             for src in (validation.validation_sources if validation else [])
         ]

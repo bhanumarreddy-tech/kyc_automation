@@ -10,6 +10,7 @@ from app.services.reference_urls import (
     fetch_one_reference_url,
     ingest_reference_urls,
     normalize_reference_urls,
+    reference_fetch_user_agent,
     validate_reference_urls_for_request,
 )
 
@@ -86,6 +87,54 @@ async def test_fetch_html_to_text(settings, monkeypatch: pytest.MonkeyPatch) -> 
     assert doc.kind == "other"
     assert "Acme Corp" in doc.text
     assert "example.com/about" in doc.filename
+    assert doc.extra.get("source_url") == "https://example.com/about"
+
+
+def test_reference_fetch_user_agent_includes_contact(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("REFERENCE_URL_FETCH_CONTACT", "https://ops.example/kyc; team@example.com")
+    _clear_settings_cache()
+    s = get_settings()
+    ua = reference_fetch_user_agent(s)
+    assert "KYC-Automation/1.0" in ua
+    assert "python-httpx" in ua
+    assert "https://ops.example/kyc" in ua
+    _clear_settings_cache()
+
+
+def test_reference_fetch_user_agent_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("REFERENCE_URL_FETCH_USER_AGENT", "MyOverride/2.0 (custom)")
+    _clear_settings_cache()
+    s = get_settings()
+    assert reference_fetch_user_agent(s) == "MyOverride/2.0 (custom)"
+    _clear_settings_cache()
+
+
+def test_enrich_validation_results_urls_fills_link() -> None:
+    from app.services.validate_section import (
+        ValidationResult,
+        _enrich_validation_results_urls,
+    )
+
+    results = [
+        ValidationResult(
+            serial_no=1,
+            validation="Yes",
+            validation_sources=[
+                {
+                    "document": "https://a.example/x · text part 1/1",
+                    "page": None,
+                    "excerpt": "foo",
+                }
+            ],
+        )
+    ]
+    out = _enrich_validation_results_urls(
+        results,
+        {"https://a.example/x · text part 1/1": "https://a.example/x"},
+    )
+    assert out[0].validation_sources[0]["url"] == "https://a.example/x"
 
 
 @pytest.mark.asyncio

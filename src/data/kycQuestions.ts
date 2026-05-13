@@ -14,6 +14,8 @@ export interface ValidationSource {
   document: string;
   excerpt?: string;
   page?: number;
+  /** Full http(s) link when validation used user-supplied reference URL content. */
+  url?: string;
 }
 
 export type ValidationStatus = "Yes" | "No" | "";
