@@ -105,18 +105,6 @@ function parseReferenceUrlsFromText(raw: string): string[] {
   return out;
 }
 
-/** Rerun needs S3 object keys on every stored attachment (newer saves). */
-function historyItemCanRerun(item: HistoryListItem): boolean {
-  if (item.documentCount === 0) {
-    return true;
-  }
-  const docs = item.attachedDocuments ?? [];
-  if (docs.length === 0) {
-    return false;
-  }
-  return docs.every((d) => Boolean(d.objectKey));
-}
-
 function historyDetailCanRerun(meta: {
   attachedDocuments: AttachedDocumentItem[];
 }): boolean {
@@ -386,20 +374,6 @@ export default function KYCAutomation() {
       displayCounts: {
         files: historyRunMeta.attachedDocuments.length,
         urls: historyRunMeta.referenceUrls.length,
-      },
-    });
-  };
-
-  const requestRerunFromHistoryList = (item: HistoryListItem) => {
-    if (!historyItemCanRerun(item)) {
-      return;
-    }
-    setRerunConfirm({
-      submissionId: item.submissionId,
-      companyLabel: item.companyName.trim(),
-      displayCounts: {
-        files: item.documentCount,
-        urls: item.referenceUrlCount ?? 0,
       },
     });
   };
@@ -1019,7 +993,7 @@ export default function KYCAutomation() {
                             Duration
                           </TableHead>
                           <TableHead className="whitespace-nowrap">Saved</TableHead>
-                          <TableHead className="text-right min-w-[168px]">Actions</TableHead>
+                          <TableHead className="text-right">Open</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -1110,40 +1084,17 @@ export default function KYCAutomation() {
                               <TableCell className="text-muted-foreground whitespace-nowrap">
                                 {new Date(item.createdAt).toLocaleString()}
                               </TableCell>
-                              <TableCell className="text-right align-top">
-                                <div className="flex flex-col items-stretch gap-1 sm:flex-row sm:justify-end">
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="secondary"
-                                    disabled={rerunInFlight}
-                                    onClick={() =>
-                                      void openHistorySubmission(item.submissionId)
-                                    }
-                                  >
-                                    Open
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="outline"
-                                    className="gap-1"
-                                    disabled={rerunInFlight || !historyItemCanRerun(item)}
-                                    title={
-                                      !historyItemCanRerun(item)
-                                        ? "Cannot rerun: legacy save without stored files, or metadata is incomplete. Use New run."
-                                        : "Run again with the same stored files and reference URLs"
-                                    }
-                                    onClick={() => requestRerunFromHistoryList(item)}
-                                  >
-                                    {rerunInFlight ? (
-                                      <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" aria-hidden />
-                                    ) : (
-                                      <RefreshCw className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                                    )}
-                                    Rerun
-                                  </Button>
-                                </div>
+                              <TableCell className="text-right">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() =>
+                                    void openHistorySubmission(item.submissionId)
+                                  }
+                                >
+                                  Open
+                                </Button>
                               </TableCell>
                             </TableRow>
                           );
