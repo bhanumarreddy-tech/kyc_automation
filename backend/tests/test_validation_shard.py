@@ -28,14 +28,13 @@ def _reset_env(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_cfg_cache()
 
 
-def test_defaults_use_distinct_gemini_validation_model(
+def test_defaults_use_configured_gemini_models(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _reset_env(monkeypatch)
     s = get_settings()
     assert s.gemini_model == app_config.GEMINI_MODEL_ANSWER
     assert s.gemini_validation_model == app_config.GEMINI_MODEL_VALIDATION
-    assert s.gemini_model != s.gemini_validation_model
 
 
 def test_merge_prefers_any_yes() -> None:

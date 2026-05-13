@@ -46,11 +46,13 @@ _CACHE_MIN_CHARS = 4_500
 
 _SYSTEM_PROMPT = (
     "You are a meticulous KYC document reviewer. Given a set of proposed "
-    "answers about a company and the user's uploaded documents, decide, for "
-    "each answer, whether the documents directly support it. Be strict: only "
-    "answer 'Yes' when there is clear, on-page evidence in the documents. "
-    "When 'Yes', cite the specific document filename and (where possible) a "
-    "page number and short verbatim excerpt that supports the answer.\n"
+    "answers about a company and the user's materials (uploaded files and/or "
+    "content fetched from user-supplied web URLs), decide, for each answer, "
+    "whether those materials directly support it. Be strict: only answer "
+    "'Yes' when there is clear, on-page evidence in the materials. "
+    "When 'Yes', cite the specific document filename (or web URL title/filename "
+    "exactly as provided) and (where possible) a page number and short "
+    "verbatim excerpt that supports the answer.\n"
     "\n"
     "Matching rules:\n"
     "- Fact-style answers (registration numbers, TINs, addresses, dates, "
@@ -91,8 +93,9 @@ _RESPONSE_FORMAT_INSTRUCTIONS = (
     "  ]\n"
     "}\n"
     "Include exactly one entry per question. When validation is 'No', the "
-    "validation_sources list must be empty. Use the exact filename strings "
-    "as provided in the attachments."
+    "validation_sources list must be empty. Use the exact document / URL "
+    "identifier strings as provided in this request (filenames, URLs, or "
+    "web-* placeholders)."
 )
 
 
@@ -115,9 +118,12 @@ def _build_stable_prefix(
     max_preview_chars: int,
 ) -> str:
     """Build the stable text block containing company + extracted text."""
-    header = f"Company: {company}\n\nUploaded supporting documents (extracted text):"
+    header = (
+        f"Company: {company}\n\nSupporting materials (uploaded files and/or "
+        "reference URL excerpts; extracted text):"
+    )
     if not text_only_documents:
-        return header + "\n\n(no documents uploaded)"
+        return header + "\n\n(no extracted text in supporting materials)"
 
     extra_blocks: list[str] = []
     remaining_budget = max_total_chars
@@ -137,7 +143,7 @@ def _build_stable_prefix(
         remaining_budget -= len(snippet)
 
     if not extra_blocks:
-        return header + "\n\n(no extractable text in uploaded documents)"
+        return header + "\n\n(no extractable text in supporting materials)"
     return header + "\n\n" + "\n\n".join(extra_blocks)
 
 
@@ -157,7 +163,7 @@ def _build_section_text(
             f"    proposed_answer: {answer_text or 'Not found'}"
         )
     return (
-        "Proposed answers to validate against the documents above:\n"
+        "Proposed answers to validate against the materials above:\n"
         + "\n".join(qa_lines)
         + "\n\n"
         + _RESPONSE_FORMAT_INSTRUCTIONS

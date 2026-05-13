@@ -5,9 +5,25 @@ import { Progress } from "@/components/ui/progress";
 interface ProcessingViewProps {
   companyName: string;
   fileCount: number;
+  referenceUrlCount?: number;
 }
 
-const ProcessingView = ({ companyName, fileCount }: ProcessingViewProps) => {
+const ProcessingView = ({
+  companyName,
+  fileCount,
+  referenceUrlCount = 0,
+}: ProcessingViewProps) => {
+  const urlPart =
+    referenceUrlCount > 0
+      ? `, ${referenceUrlCount} reference ${referenceUrlCount === 1 ? "URL" : "URLs"}`
+      : "";
+  const docPart =
+    fileCount > 0
+      ? `${fileCount} ${fileCount === 1 ? "document" : "documents"}`
+      : referenceUrlCount > 0
+        ? "reference pages only"
+        : "no uploads";
+
   return (
     <div className="max-w-3xl mx-auto animate-fade-in">
       <Card className="p-8 border-border/50 bg-card/50 backdrop-blur-sm">
@@ -15,7 +31,8 @@ const ProcessingView = ({ companyName, fileCount }: ProcessingViewProps) => {
           <div className="text-center space-y-2">
             <h2 className="text-2xl font-bold">Processing Documents</h2>
             <p className="text-muted-foreground">
-              Analyzing {fileCount} {fileCount === 1 ? 'document' : 'documents'} for {companyName}
+              Analyzing {docPart}
+              {urlPart} for {companyName}
             </p>
           </div>
 
@@ -37,7 +54,11 @@ const ProcessingView = ({ companyName, fileCount }: ProcessingViewProps) => {
             <ProcessingStep
               icon={<FileSearch className="h-5 w-5" />}
               title="Scanning Documents"
-              description="Reading and parsing uploaded files"
+              description={
+                referenceUrlCount > 0
+                  ? "Reading uploaded files and fetching reference URLs"
+                  : "Reading and parsing uploaded files"
+              }
               status="complete"
             />
             <ProcessingStep

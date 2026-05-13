@@ -21,6 +21,7 @@ from app.questions import KYC_QUESTIONS, group_by_section
 from app.schemas import KYCRow, SourceLink, ValidationSource
 from app.services.answer_section import AnsweredQuestion, answer_section
 from app.services.documents import parse_documents
+from app.services.reference_urls import ingest_reference_urls
 from app.services.validate_section import ValidationResult, validate_section
 
 logger = logging.getLogger(__name__)
@@ -29,14 +30,25 @@ logger = logging.getLogger(__name__)
 async def run_pipeline(
     company: str,
     uploads: list[tuple[str, bytes, str]],
+    reference_urls: list[str] | None = None,
 ) -> list[KYCRow]:
     """Run the full KYC pipeline and return the populated questionnaire rows."""
 
     settings = get_settings()
     sections = group_by_section()
 
-    parsed_docs = await parse_documents(uploads)
-    logger.info("Parsed %d uploaded document(s)", len(parsed_docs))
+    ref_urls = reference_urls or []
+    # Uploads first, then user-supplied URLs (same order as in the run form).
+    upload_docs, url_docs = await asyncio.gather(
+        parse_documents(uploads),
+        ingest_reference_urls(ref_urls, settings),
+    )
+    parsed_docs = [*upload_docs, *url_docs]
+    logger.info(
+        "Parsed %d uploaded document(s) and %d reference URL document(s)",
+        len(upload_docs),
+        len(url_docs),
+    )
 
     # Throttle concurrency so we stay under Gemini API quota. Both phases use
     # independent semaphores configured via env (ANSWER_CONCURRENCY,

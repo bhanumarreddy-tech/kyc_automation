@@ -59,6 +59,13 @@ ENABLE_PROMPT_CACHING = True
 GEMINI_OVERLOAD_EXTRA_ATTEMPTS = 3
 GEMINI_OVERLOAD_BASE_DELAY_SECONDS = 10.0
 
+# User-supplied reference URLs (fetched server-side for validation only).
+REFERENCE_URL_MAX_PER_REQUEST = 20
+REFERENCE_URL_MAX_RESPONSE_BYTES = 5_242_880  # 5 MiB per URL
+REFERENCE_URL_FETCH_TIMEOUT_SECONDS = 30.0
+REFERENCE_URL_MAX_REDIRECTS = 5
+REFERENCE_URL_MAX_TEXT_CHARS = 120_000  # per URL after extraction/truncation
+
 
 # Railway Postgres — non-secret connection defaults (match Railway Postgres plugin outputs).
 # Password comes only from env (DATABASE_PASSWORD / POSTGRES_PASSWORD / PGPASSWORD).
@@ -141,6 +148,11 @@ class Settings:
     s3_bucket: str | None = None
     s3_access_key_id: str | None = None
     s3_secret_access_key: str | None = None
+    reference_url_max_per_request: int = REFERENCE_URL_MAX_PER_REQUEST
+    reference_url_max_response_bytes: int = REFERENCE_URL_MAX_RESPONSE_BYTES
+    reference_url_fetch_timeout_seconds: float = REFERENCE_URL_FETCH_TIMEOUT_SECONDS
+    reference_url_max_redirects: int = REFERENCE_URL_MAX_REDIRECTS
+    reference_url_max_text_chars: int = REFERENCE_URL_MAX_TEXT_CHARS
 
     def s3_ready(self) -> bool:
         return bool(
@@ -200,4 +212,9 @@ def get_settings() -> Settings:
         s3_bucket=s3_bucket,
         s3_access_key_id=s3_access,
         s3_secret_access_key=s3_secret,
+        reference_url_max_per_request=REFERENCE_URL_MAX_PER_REQUEST,
+        reference_url_max_response_bytes=REFERENCE_URL_MAX_RESPONSE_BYTES,
+        reference_url_fetch_timeout_seconds=REFERENCE_URL_FETCH_TIMEOUT_SECONDS,
+        reference_url_max_redirects=REFERENCE_URL_MAX_REDIRECTS,
+        reference_url_max_text_chars=REFERENCE_URL_MAX_TEXT_CHARS,
     )

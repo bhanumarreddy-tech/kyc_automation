@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Table,
   TableBody,
@@ -81,6 +82,19 @@ function formatDurationMs(ms: number | null | undefined): string {
   return `${minutes}m ${seconds}s`;
 }
 
+/** One URL per line; trim, drop empties, preserve first-seen order (matches backend). */
+function parseReferenceUrlsFromText(raw: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const u = line.trim();
+    if (!u || seen.has(u)) continue;
+    seen.add(u);
+    out.push(u);
+  }
+  return out;
+}
+
 const API_ENDPOINT = apiUrl("/api/process");
 const HISTORY_LIST_ENDPOINT = apiUrl("/api/history");
 
@@ -90,6 +104,7 @@ export default function KYCAutomation() {
   const [step, setStep] = useState<WorkflowStep>("upload");
   const [companyName, setCompanyName] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const [referenceUrlsText, setReferenceUrlsText] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [rows, setRows] = useState<KYCRow[]>([]);
   const [mainTab, setMainTab] = useState<MainTab>("run");
@@ -298,6 +313,10 @@ export default function KYCAutomation() {
       for (const file of files) {
         formData.append("files", file, file.name);
       }
+      const refUrls = parseReferenceUrlsFromText(referenceUrlsText);
+      for (const u of refUrls) {
+        formData.append("reference_urls", u);
+      }
 
       const res = await fetch(API_ENDPOINT, {
         method: "POST",
@@ -362,6 +381,7 @@ export default function KYCAutomation() {
     setStep("upload");
     setCompanyName("");
     setFiles([]);
+    setReferenceUrlsText("");
     setRows([]);
     setCompletedRunDownloads(null);
   };
@@ -505,6 +525,21 @@ export default function KYCAutomation() {
                 )}
               </div>
 
+              <div className="space-y-2">
+                <Label htmlFor="referenceUrls">Reference URLs (optional)</Label>
+                <Textarea
+                  id="referenceUrls"
+                  placeholder={"https://www.sec.gov/...\nOne http(s) URL per line"}
+                  value={referenceUrlsText}
+                  onChange={(e) => setReferenceUrlsText(e.target.value)}
+                  className="min-h-[100px] resize-y font-mono text-sm"
+                />
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Content from these pages is fetched by the server and included when validating answers
+                  against your materials (in addition to any uploaded files).
+                </p>
+              </div>
+
               <Button
                 onClick={handleStartProcessing}
                 className="w-full"
@@ -517,7 +552,11 @@ export default function KYCAutomation() {
             )}
 
             {step === "processing" && (
-          <ProcessingView companyName={companyName} fileCount={files.length} />
+          <ProcessingView
+            companyName={companyName}
+            fileCount={files.length}
+            referenceUrlCount={parseReferenceUrlsFromText(referenceUrlsText).length}
+          />
             )}
 
             {step === "results" && (

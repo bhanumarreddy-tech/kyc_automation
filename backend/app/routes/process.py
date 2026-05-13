@@ -7,6 +7,8 @@ import time
 import uuid
 from datetime import datetime
 
+from typing import Annotated
+
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.config import get_settings
@@ -14,6 +16,10 @@ from app.db.session import db_session_maker
 from app.db.submissions import create_kyc_submission
 from app.schemas import AttachedDocument, ProcessResponse
 from app.services.pipeline import run_pipeline
+from app.services.reference_urls import (
+    normalize_reference_urls,
+    validate_reference_urls_for_request,
+)
 from app.services.s3_storage import upload_submission_files
 
 logger = logging.getLogger(__name__)
@@ -25,6 +31,7 @@ router = APIRouter(prefix="/api", tags=["kyc"])
 async def process_kyc(
     company_name: str = Form(..., min_length=1),
     files: list[UploadFile] | None = File(default=None),
+    reference_urls: Annotated[list[str] | None, Form()] = None,
 ) -> ProcessResponse:
     settings = get_settings()
     if not settings.gemini_api_key:
@@ -37,6 +44,15 @@ async def process_kyc(
     if not company:
         raise HTTPException(status_code=400, detail="company_name is required")
 
+    normalized_urls = normalize_reference_urls(reference_urls or [])
+    ok_urls, url_err = validate_reference_urls_for_request(
+        normalized_urls,
+        max_count=settings.reference_url_max_per_request,
+    )
+    if url_err:
+        raise HTTPException(status_code=400, detail=url_err)
+    assert ok_urls is not None
+
     uploads: list[tuple[str, bytes, str]] = []
     for upload in files or []:
         data = await upload.read()
@@ -44,10 +60,12 @@ async def process_kyc(
 
     total_payload = sum(len(raw) for _, raw, _ in uploads)
     logger.info(
-        "Processing KYC submission for '%s' with %d uploaded file(s); total payload ~%.2f MiB "
+        "Processing KYC submission for '%s' with %d uploaded file(s), %d reference URL(s); "
+        "total file payload ~%.2f MiB "
         "(frontend nginx allows 100 MiB for /api/; raise client_max_body_size if you need more)",
         company,
         len(uploads),
+        len(ok_urls),
         total_payload / (1024 * 1024),
     )
 
@@ -81,7 +99,7 @@ async def process_kyc(
         )
 
     pipeline_started = time.perf_counter()
-    rows = await run_pipeline(company, uploads)
+    rows = await run_pipeline(company, uploads, reference_urls=ok_urls)
     duration_ms = int((time.perf_counter() - pipeline_started) * 1000)
 
     submission_id_out: str | None = None
