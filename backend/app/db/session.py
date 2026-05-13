@@ -5,6 +5,7 @@ from __future__ import annotations
 import ssl
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -90,6 +91,14 @@ async def init_database() -> None:
     )
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Existing deployments: create_all does not add new columns to kyc_submissions.
+        if _engine.dialect.name == "postgresql":
+            await conn.execute(
+                text(
+                    "ALTER TABLE kyc_submissions "
+                    "ADD COLUMN IF NOT EXISTS reference_urls JSONB"
+                )
+            )
 
 
 async def dispose_database() -> None:
