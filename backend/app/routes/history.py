@@ -74,12 +74,17 @@ async def get_history_detail(submission_id: str) -> HistoryDetailResponse:
         raise HTTPException(status_code=404, detail="Submission not found")
 
     rows = [KYCRow.model_validate(item) for item in record.rows]
+    raw_refs = record.reference_urls
+    ref_urls: list[str] = []
+    if isinstance(raw_refs, list):
+        ref_urls = [str(u).strip() for u in raw_refs if u is not None and str(u).strip()]
     return HistoryDetailResponse(
         submission_id=str(record.id),
         company_name=record.company_name,
         created_at=record.created_at,
         attached_documents=attached_documents_from_stored(record.document_filenames),
         duration_ms=record.duration_ms,
+        reference_urls=ref_urls,
         rows=rows,
     )
 

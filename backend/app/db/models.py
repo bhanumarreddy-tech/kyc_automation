@@ -33,4 +33,6 @@ class KYCSubmission(Base):
     rows: Mapped[list] = mapped_column(JSONB, nullable=False)
     # Legacy: list[str]. Current: list[{"filename", "sizeBytes", "contentType"}].
     document_filenames: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # User-supplied reference URLs (http(s)), same order as submitted.
+    reference_urls: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

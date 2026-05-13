@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Upload, FileText, Home, X, ArrowLeft, Loader2 } from "lucide-react";
+import { Upload, FileText, Home, X, ArrowLeft, Loader2, Link2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import ProcessingView from "@/components/kyc/ProcessingView";
 import { ResultsTable } from "@/components/kyc/ResultsTable";
@@ -116,6 +116,11 @@ export default function KYCAutomation() {
   const [historyRunMeta, setHistoryRunMeta] = useState<{
     attachedDocuments: AttachedDocumentItem[];
     durationMs: number | null;
+    referenceUrls: string[];
+  } | null>(null);
+  const [lastRunMeta, setLastRunMeta] = useState<{
+    durationMs: number | null;
+    referenceUrls: string[];
   } | null>(null);
   const [completedRunDownloads, setCompletedRunDownloads] = useState<{
     submissionId: string;
@@ -231,6 +236,7 @@ export default function KYCAutomation() {
     setHistoryRunMeta(null);
     setRows([]);
     setCompanyName("");
+    setLastRunMeta(null);
   };
 
   const openHistorySubmission = async (submissionId: string) => {
@@ -255,6 +261,7 @@ export default function KYCAutomation() {
         rows: KYCRow[];
         attachedDocuments?: AttachedDocumentItem[];
         durationMs?: number | null;
+        referenceUrls?: string[];
       };
       if (!data?.rows || !Array.isArray(data.rows)) {
         throw new Error("Invalid submission payload");
@@ -266,6 +273,7 @@ export default function KYCAutomation() {
           ? data.attachedDocuments
           : [],
         durationMs: data.durationMs ?? null,
+        referenceUrls: Array.isArray(data.referenceUrls) ? data.referenceUrls : [],
       });
       setHistoryDetailId(submissionId);
     } catch (e) {
@@ -333,6 +341,7 @@ export default function KYCAutomation() {
         submissionId?: string;
         durationMs?: number | null;
         attachedDocuments?: AttachedDocumentItem[];
+        referenceUrls?: string[];
       };
       if (!data?.rows || !Array.isArray(data.rows)) {
         throw new Error("Backend returned an invalid response");
@@ -340,6 +349,11 @@ export default function KYCAutomation() {
 
       setRows(hydrateKycRows(data.rows));
       setStep("results");
+
+      setLastRunMeta({
+        durationMs: typeof data.durationMs === "number" && !Number.isNaN(data.durationMs) ? data.durationMs : null,
+        referenceUrls: Array.isArray(data.referenceUrls) ? data.referenceUrls : [],
+      });
 
       if (
         typeof data.submissionId === "string" &&
@@ -374,6 +388,7 @@ export default function KYCAutomation() {
         variant: "destructive",
       });
       setStep("upload");
+      setLastRunMeta(null);
     }
   };
 
@@ -384,6 +399,7 @@ export default function KYCAutomation() {
     setReferenceUrlsText("");
     setRows([]);
     setCompletedRunDownloads(null);
+    setLastRunMeta(null);
   };
 
   const handleRowChange = (serialNo: number, updates: Partial<KYCRow>) => {
@@ -561,6 +577,71 @@ export default function KYCAutomation() {
 
             {step === "results" && (
           <div className="space-y-4">
+            {lastRunMeta && (
+              <div className="rounded-md border bg-muted/30 p-4 text-sm space-y-3">
+                <div className="flex flex-wrap gap-x-6 gap-y-1">
+                  <div>
+                    <span className="text-muted-foreground">Run duration</span>
+                    {": "}
+                    <span className="font-medium">
+                      {formatDurationMs(lastRunMeta.durationMs)}
+                    </span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-muted-foreground text-xs uppercase tracking-wide">
+                    Attached documents
+                  </div>
+                  {files.length === 0 ? (
+                    <p className="text-muted-foreground">No documents were uploaded.</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {files.map((f, idx) => (
+                        <li
+                          key={`${f.name}-${idx}`}
+                          className="flex flex-wrap items-center gap-x-3 gap-y-2 p-2 bg-background rounded-md border"
+                        >
+                          <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <span title={f.name} className="flex-1 min-w-0 truncate font-medium">
+                            {f.name}
+                          </span>
+                          <span className="text-xs text-muted-foreground whitespace-nowrap">
+                            {(f.size / 1024 / 1024).toFixed(2)} MB
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <div className="text-muted-foreground text-xs uppercase tracking-wide">
+                    Reference URLs
+                  </div>
+                  {lastRunMeta.referenceUrls.length === 0 ? (
+                    <p className="text-muted-foreground">None.</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {lastRunMeta.referenceUrls.map((url, idx) => (
+                        <li
+                          key={`${url}-${idx}`}
+                          className="flex flex-wrap items-start gap-x-3 gap-y-1 p-2 bg-background rounded-md border"
+                        >
+                          <Link2 className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                          <a
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary underline break-all font-medium flex-1 min-w-0"
+                          >
+                            {url}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
             {completedRunDownloads && completedRunDownloads.documents.length > 0 && (
               <div className="rounded-md border bg-muted/30 p-4 text-sm space-y-2">
                 <div className="text-muted-foreground text-xs uppercase tracking-wide">
@@ -648,6 +729,33 @@ export default function KYCAutomation() {
                                   {(doc.sizeBytes / 1024 / 1024).toFixed(2)} MB
                                 </span>
                               )}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-muted-foreground text-xs uppercase tracking-wide">
+                        Reference URLs
+                      </div>
+                      {historyRunMeta.referenceUrls.length === 0 ? (
+                        <p className="text-muted-foreground">None.</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {historyRunMeta.referenceUrls.map((url, idx) => (
+                            <li
+                              key={`${url}-${idx}`}
+                              className="flex flex-wrap items-start gap-x-3 gap-y-1 p-2 bg-background rounded-md border"
+                            >
+                              <Link2 className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                              <a
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-primary underline break-all font-medium flex-1 min-w-0"
+                              >
+                                {url}
+                              </a>
                             </li>
                           ))}
                         </ul>

@@ -113,6 +113,7 @@ async def process_kyc(
                 rows=rows,
                 attached_documents=attached_documents,
                 duration_ms=duration_ms,
+                reference_urls=ok_urls,
             )
             await db_session.commit()
             submission_id_out = str(record.id)
@@ -124,4 +125,5 @@ async def process_kyc(
         saved_at=saved_at_out,
         duration_ms=duration_ms,
         attached_documents=attached_documents,
+        reference_urls=list(ok_urls),
     )

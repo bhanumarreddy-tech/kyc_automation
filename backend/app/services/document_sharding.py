@@ -45,6 +45,26 @@ def _stem_ext(filename: str) -> tuple[str, str]:
     return stem, ext or ""
 
 
+def _material_display_base(doc: ParsedDocument) -> str:
+    """Prefer full reference URL for labels; else :attr:`ParsedDocument.filename`."""
+    u = (doc.extra or {}).get("source_url")
+    if isinstance(u, str) and u.strip():
+        return u.strip()
+    fn = doc.filename
+    if isinstance(fn, str) and fn.lower().startswith(("http://", "https://")):
+        return fn.strip()
+    return doc.filename
+
+
+def _label_stem_suffix(display_base: str, original_filename: str) -> tuple[str, str]:
+    """Path-based stem/suffix breaks on http(s) URLs; keep the full URL as the label stem."""
+    if display_base.lower().startswith(("http://", "https://")):
+        suf = Path(original_filename).suffix.lower() or ""
+        return display_base, suf
+    stem, suf = _stem_ext(display_base)
+    return stem, suf or ""
+
+
 def _write_pdf_subset(reader: PdfReader, indices: list[int]) -> bytes:
     writer = PdfWriter()
     for i in indices:
@@ -99,11 +119,12 @@ def _split_page_indices_recursive(
 
 def _pdf_slices_for_reader(
     reader: PdfReader,
-    base_filename: str,
+    display_base: str,
+    original_filename: str,
     settings: Settings,
 ) -> list[tuple[str, bytes]]:
     n = len(reader.pages)
-    stem, suf = _stem_ext(base_filename)
+    stem, suf = _label_stem_suffix(display_base, original_filename)
     groups: list[list[int]] = []
     max_pg = settings.validation_max_pages_per_pdf_slice
     for start in range(0, n, max_pg):
@@ -146,10 +167,19 @@ def expand_pdf_document(doc: ParsedDocument, settings: Settings) -> list[ParsedD
         logger.warning("Cannot split PDF %s: %s", doc.filename, exc)
         return [doc]
 
-    pairs = _pdf_slices_for_reader(reader, doc.filename, settings)
+    pairs = _pdf_slices_for_reader(
+        reader,
+        _material_display_base(doc),
+        doc.filename,
+        settings,
+    )
     parsed: list[ParsedDocument] = []
     for name, blob in pairs:
-        parsed.append(parse_pdf_bytes(name, blob))
+        sub = parse_pdf_bytes(name, blob)
+        su = (doc.extra or {}).get("source_url")
+        if isinstance(su, str) and su.strip():
+            sub.extra = {**sub.extra, "source_url": su.strip()}
+        parsed.append(sub)
     return parsed or [doc]
 
 
@@ -198,8 +228,12 @@ def expand_large_text_documents(
             out.append(doc)
             continue
 
-        stem, suf = _stem_ext(doc.filename)
-        logical_base = stem + suf
+        base = _material_display_base(doc)
+        if base.lower().startswith(("http://", "https://")):
+            logical_base = base
+        else:
+            stem, suf = _stem_ext(doc.filename)
+            logical_base = stem + suf
         total = len(chunks)
         for idx, txt in enumerate(chunks, start=1):
             chunk_extra = {**(doc.extra or {}), "orig_filename": logical_base}

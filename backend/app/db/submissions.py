@@ -19,6 +19,7 @@ async def create_kyc_submission(
     rows: list[KYCRow],
     attached_documents: list[AttachedDocument],
     duration_ms: int,
+    reference_urls: list[str] | None = None,
 ) -> KYCSubmission:
     payload = [r.model_dump(mode="json", by_alias=True) for r in rows]
     doc_meta = (
@@ -26,11 +27,13 @@ async def create_kyc_submission(
         if attached_documents
         else None
     )
+    ref_meta = reference_urls if reference_urls else None
     record = KYCSubmission(
         id=submission_id,
         company_name=company_name,
         rows=payload,
         document_filenames=doc_meta,
+        reference_urls=ref_meta,
         duration_ms=duration_ms,
     )
     session.add(record)

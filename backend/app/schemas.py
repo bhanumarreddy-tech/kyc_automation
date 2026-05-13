@@ -72,6 +72,7 @@ class ProcessResponse(BaseModel):
         default_factory=list,
         alias="attachedDocuments",
     )
+    reference_urls: list[str] = Field(default_factory=list, alias="referenceUrls")
 
 
 def history_metrics_from_rows_json(rows: list) -> tuple[int, int]:
@@ -135,4 +136,5 @@ class HistoryDetailResponse(BaseModel):
         alias="attachedDocuments",
     )
     duration_ms: int | None = Field(default=None, alias="durationMs")
+    reference_urls: list[str] = Field(default_factory=list, alias="referenceUrls")
     rows: list[KYCRow]
