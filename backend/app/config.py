@@ -75,8 +75,10 @@ REFERENCE_URL_MAX_TEXT_CHARS = 120_000  # per URL after extraction/truncation
 REFERENCE_URL_FETCH_CONTACT = ""
 REFERENCE_URL_FETCH_USER_AGENT: str | None = None
 
-# Gemini citation URLs (Sources column): normalize SEC S3 mirrors; optional HTTP verify.
-SOURCE_URL_VERIFY_ENABLED = False
+# Gemini citation URLs (Sources column): probe www.sec.gov/Archives to repair broken exhibits.
+SOURCE_URL_VERIFY_ENABLED = True
+# When True (recommended), only verify SEC Archives/edgar URLs; faster and fewer probes elsewhere.
+SOURCE_URL_VERIFY_EDGAR_ONLY = True
 SOURCE_URL_VERIFY_TIMEOUT_SECONDS = 15.0
 SOURCE_URL_VERIFY_MAX_URLS = 250  # deduped probes per submission; 0 = unlimited
 
@@ -199,6 +201,7 @@ class Settings:
     reference_url_fetch_contact: str = REFERENCE_URL_FETCH_CONTACT
     reference_url_fetch_user_agent: str | None = REFERENCE_URL_FETCH_USER_AGENT
     source_url_verify_enabled: bool = SOURCE_URL_VERIFY_ENABLED
+    source_url_verify_edgar_only: bool = SOURCE_URL_VERIFY_EDGAR_ONLY
     source_url_verify_timeout_seconds: float = SOURCE_URL_VERIFY_TIMEOUT_SECONDS
     source_url_verify_max_urls: int = SOURCE_URL_VERIFY_MAX_URLS
     answer_sources_use_grounding_metadata: bool = ANSWER_SOURCES_USE_GROUNDING_METADATA
@@ -283,6 +286,9 @@ def get_settings() -> Settings:
         reference_url_fetch_user_agent=ref_ua,
         source_url_verify_enabled=_env_bool(
             "SOURCE_URL_VERIFY_ENABLED", SOURCE_URL_VERIFY_ENABLED
+        ),
+        source_url_verify_edgar_only=_env_bool(
+            "SOURCE_URL_VERIFY_EDGAR_ONLY", SOURCE_URL_VERIFY_EDGAR_ONLY
         ),
         source_url_verify_timeout_seconds=float(
             os.environ.get(

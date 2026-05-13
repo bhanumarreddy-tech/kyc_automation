@@ -267,18 +267,35 @@ def format_issuer_edgar_search_hint(hub: SecFilingsHub | None) -> str:
     if hub is None or not hub.hub_sources:
         return ""
     browse = ""
+    filing_lines: list[str] = []
     for s in hub.hub_sources:
         u = str(s.get("url") or "").strip()
         ul = u.lower()
+        title = str(s.get("title") or "").strip() or u
         if "/edgar/browse" in ul or "/cgi-bin/browse-edgar" in ul:
-            browse = u
-            break
+            if not browse:
+                browse = u
+            continue
+        if "/archives/edgar/" in ul and u.startswith("http"):
+            t = title.replace("\n", " ").strip()[:220]
+            filing_lines.append(f"- {t}\n  {u}")
     if not browse:
         browse = str(hub.hub_sources[0].get("url") or "")
     matched = hub.matched_title.replace("\n", " ").strip()[:240]
+
+    filings_block = ""
+    if filing_lines:
+        filings_block = (
+            "\nRecent EDGAR primary documents for this issuer (orientation only "
+            "— still cite URLs your searches actually retrieved per question):\n"
+            + "\n".join(filing_lines[:8])
+            + "\n"
+        )
     return (
         f"Issuer verified on SEC EDGAR — matched registrant title: {matched}; "
-        f"CIK (10-digit): {hub.cik_pad}. Canonical filings browse hub: {browse}\n"
+        f"CIK (10-digit): {hub.cik_pad}. Canonical filings browse hub: {browse}"
+        + filings_block
+        + "\n"
         "Per question you MUST list ONLY `sources` URLs that your searches actually "
         "retrieved THIS TURN and that support THAT question's facts. Do not repeat "
         "the same issuer-wide URLs for every serial_no unless search truly "

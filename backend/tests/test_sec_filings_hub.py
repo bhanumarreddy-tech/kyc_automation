@@ -87,6 +87,8 @@ def test_format_edgar_hint_includes_browse_and_rules() -> None:
     assert "EXAMPLE CORP" in text
     assert "edgar/browse" in text
     assert "serial_no" in text.lower()
+    assert "Recent EDGAR primary documents" in text
+    assert "doc.htm" in text
 
 
 def test_format_edgar_hint_empty_without_hub() -> None:

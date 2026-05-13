@@ -9,8 +9,10 @@ verified-missing exhibit with that filing's ``{accession}-index.htm`` page.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import time
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -25,7 +27,14 @@ from app.services.reference_urls import (
 
 logger = logging.getLogger(__name__)
 
+SEC_DATA_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
+_ARCHIVES_DOC_PATH_RE = re.compile(
+    r"/Archives/edgar/data/\d+/[^/?#]+/[^/?#]+", re.I
+)
+
 _S3_NOSUCHKEY_RE = re.compile(br"<Code>\s*NoSuchKey\s*</Code>", re.I)
+_SUBMISSIONS_CACHE: dict[str, tuple[float, Any]] = {}
+_SUBMISSIONS_TTL_S = 3600.0
 
 
 def normalize_sec_edgar_source_url(url: str) -> str:
@@ -115,17 +124,194 @@ def edgar_filing_index_fallback_url(url: str) -> str | None:
     return urlunparse(("https", "www.sec.gov", new_path, "", "", ""))
 
 
-def _probe_verdict(status: int, body_snip: bytes) -> bool | None:
-    """Whether URL exists: True / False / None (inconclusive: rate-limit, maintenance, …)."""
+def parse_sec_archives_primary_path(url: str) -> tuple[str, str, str] | None:
+    """Return ``(CIK_digits, accession_folder_no_dash, filename)`` for Archives/edgar/data URLs."""
+    parsed = urlparse((url or "").strip())
+    if parsed.scheme not in ("http", "https"):
+        return None
+    host = (parsed.hostname or "").lower()
+    if host not in ("www.sec.gov", "sec.gov"):
+        return None
+    if not _ARCHIVES_DOC_PATH_RE.search(parsed.path or ""):
+        return None
+    parsed_parts = _edgar_data_parts(parsed.path or "")
+    if not parsed_parts:
+        return None
+    parts, i_edgar = parsed_parts
+    i_data = i_edgar + 1
+    if len(parts) < i_data + 4:
+        return None
+    cik_seg = parts[i_data + 1]
+    acc_flat = parts[i_data + 2]
+    doc = parts[i_data + 3]
+    if not cik_seg.isdigit() or not acc_flat or not doc:
+        return None
+    return cik_seg, acc_flat, doc
+
+
+def is_sec_archives_edgar_verify_target(url: str) -> bool:
+    """Whether this citation is a SEC Archives path eligible for HTTP probing."""
+    return parse_sec_archives_primary_path(normalize_sec_edgar_source_url(url)) is not None
+
+
+def edgar_filing_stem_index_fallback_url(url: str) -> str | None:
+    """Map ``basename.ext`` exhibit to ``basename-index.htm``."""
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in ("http", "https"):
+        return None
+    host = (parsed.hostname or "").lower()
+    if host not in ("www.sec.gov", "sec.gov"):
+        return None
+    parsed_parts = _edgar_data_parts(parsed.path or "")
+    if not parsed_parts:
+        return None
+    parts, i_edgar = parsed_parts
+    i_data = i_edgar + 1
+    if len(parts) < i_data + 4:
+        return None
+    doc_name = parts[i_data + 3]
+    if "-index.htm" in doc_name.lower():
+        return None
+    chunks = doc_name.rsplit(".", 1)
+    if len(chunks) != 2:
+        return None
+    stem, ext = chunks[0], chunks[1].lower()
+    if ext not in ("htm", "html", "txt", "xml", "pdf", "xhtml"):
+        return None
+    index_name = f"{stem}-index.htm"
+    new_parts = parts[: i_data + 3] + [index_name]
+    new_path = "/" + "/".join(new_parts)
+    return urlunparse(("https", "www.sec.gov", new_path, "", "", ""))
+
+
+def edgar_filing_fallback_candidates(url: str) -> list[str]:
+    """Stem-index first, then accession-folder ``{flat}-index.htm``."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for cand in (
+        edgar_filing_stem_index_fallback_url(url),
+        edgar_filing_index_fallback_url(url),
+    ):
+        if not cand or cand in seen:
+            continue
+        seen.add(cand)
+        out.append(cand)
+    return out
+
+
+async def _get_range_snippet(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    max_bytes: int = 4096,
+) -> tuple[int, bytes]:
+    rng_last = max(0, max_bytes - 1)
+    try:
+        async with client.stream(
+            "GET",
+            url,
+            follow_redirects=True,
+            headers={"Range": f"bytes=0-{rng_last}"},
+        ) as stream_resp:
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in stream_resp.aiter_bytes():
+                if not chunk:
+                    continue
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= max_bytes:
+                    break
+            body = b"".join(chunks)
+            return stream_resp.status_code, body
+    except httpx.HTTPError:
+        return 598, b""
+
+
+async def _fetch_submissions_json_cached(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    cik_padded: str,
+) -> Any | None:
+    now = time.monotonic()
+    hit = _SUBMISSIONS_CACHE.get(cik_padded)
+    if hit is not None and (now - hit[0]) < _SUBMISSIONS_TTL_S:
+        return hit[1]
+    sub_url = SEC_DATA_SUBMISSIONS_URL.format(cik=cik_padded)
+    ua = reference_fetch_user_agent(settings, sub_url)
+    headers = {"User-Agent": ua, "Accept-Encoding": "gzip"}
+    try:
+        r = await client.get(sub_url, headers=headers)
+        r.raise_for_status()
+        data = json.loads(r.text)
+        _SUBMISSIONS_CACHE[cik_padded] = (now, data)
+        return data
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("submissions lookup failed CIK=%s: %s", cik_padded, exc)
+        return None
+
+
+def _authority_primary_document_url(data: Any, *, cik_seg: str, acc_flat: str) -> str | None:
+    filings = (((data or {}).get("filings")) or {}).get("recent") or {}
+    accs_raw = filings.get("accessionNumber") or []
+    docs = filings.get("primaryDocument") or []
+    needle = "".join(acc_flat.split("-"))
+    for idx, raw_acc in enumerate(accs_raw):
+        if idx >= len(docs):
+            break
+        a = "".join(str(raw_acc).split("-")).strip().lower()
+        if a != needle.lower():
+            continue
+        primary = str(docs[idx]).strip()
+        if not primary:
+            return None
+        ciki = str(int(cik_seg))
+        return normalize_sec_edgar_source_url(
+            f"https://www.sec.gov/Archives/edgar/data/{ciki}/{needle}/{primary}"
+        )
+    return None
+
+
+async def submissions_canonical_archive_url(
+    client: httpx.AsyncClient,
+    normalized_url: str,
+    settings: Settings,
+) -> str | None:
+    pts = parse_sec_archives_primary_path(normalized_url)
+    if pts is None:
+        return None
+    cik_seg, acc_flat, _ = pts
+    cik_pad = f"{int(cik_seg):010d}"
+    payload = await _fetch_submissions_json_cached(client, settings, cik_pad)
+    if payload is None:
+        return None
+    return _authority_primary_document_url(payload, cik_seg=cik_seg, acc_flat=acc_flat)
+
+
+def _probe_verdict(status: int, body_snip: bytes, *, snippet_checked: bool) -> bool | None:
     if _S3_NOSUCHKEY_RE.search(body_snip):
         return False
+
+    if snippet_checked:
+        if status in (404, 410):
+            return False
+        if status in (429, 502, 503, 504, 598, 599):
+            return None
+        if status == 403:
+            return None
+        if 200 <= status < 400:
+            if len(body_snip.strip()) < 32:
+                return None
+            return True
+        if status >= 400:
+            return False
+        return None
+
     if 200 <= status < 400:
         return True
     if status in (404, 410):
         return False
-    if status in (429, 502, 503, 504):
-        return None
-    if status in (598, 599):
+    if status in (429, 502, 503, 504, 598, 599):
         return None
     if status == 403:
         return None
@@ -135,42 +321,31 @@ def _probe_verdict(status: int, body_snip: bytes) -> bool | None:
 
 
 async def _probe_url(client: httpx.AsyncClient, url: str) -> tuple[int, bytes]:
-    """Return HTTP status and a short body snippet (empty when HEAD suffices)."""
+    """GET snippet for Archives primary paths so S3/XML errors show in body."""
+    normalized = normalize_sec_edgar_source_url(url)
+    if parse_sec_archives_primary_path(normalized) is not None:
+        return await _get_range_snippet(client, normalized)
+
     try:
-        resp = await client.head(url, follow_redirects=True)
+        resp = await client.head(normalized, follow_redirects=True)
     except httpx.HTTPError:
         return 599, b""
 
     if resp.status_code == 405:
         try:
-            async with client.stream(
-                "GET",
-                url,
-                follow_redirects=True,
-                headers={"Range": "bytes=0-4095"},
-            ) as stream_resp:
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in stream_resp.aiter_bytes():
-                    if not chunk:
-                        continue
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total >= 4096:
-                        break
-                body = b"".join(chunks)
-                return stream_resp.status_code, body
+            return await _get_range_snippet(client, normalized)
         except httpx.HTTPError:
             return 598, b""
 
     return resp.status_code, b""
 
 
-async def verify_or_repair_source_url(url: str, settings: Settings) -> str | None:
-    """HEAD-check ``url`` (after normalization); EDGAR index fallback or drop.
+def _snippet_check_for_normalized(normalized_url: str) -> bool:
+    return parse_sec_archives_primary_path(normalized_url) is not None
 
-    Returns a usable URL, or ``None`` if the link should be removed from sources.
-    """
+
+async def verify_or_repair_source_url(url: str, settings: Settings) -> str | None:
+    """Normalize, probe Archives with GET-snippet semantics, repair via submissions or index URLs."""
     normalized = normalize_sec_edgar_source_url(url)
     safe, reason = assert_url_safe_for_ssrf(normalized)
     if not safe:
@@ -191,32 +366,62 @@ async def verify_or_repair_source_url(url: str, settings: Settings) -> str | Non
         max_redirects=settings.reference_url_max_redirects,
         headers=headers,
     ) as client:
-        status, snip = await _probe_url(client, normalized)
-        v0 = _probe_verdict(status, snip)
+        async def classify(u: str) -> bool | None:
+            u_n = normalize_sec_edgar_source_url(u)
+            st, snip = await _probe_url(client, u_n)
+            return _probe_verdict(
+                st,
+                snip,
+                snippet_checked=_snippet_check_for_normalized(u_n),
+            )
+
+        v0 = await classify(normalized)
         if v0 is True or v0 is None:
-            # OK, or SEC throttling / maintenance — keep the link we were given.
             return normalized
 
-        fb = edgar_filing_index_fallback_url(normalized)
-        if fb and fb != normalized:
-            fb_safe, fb_reason = assert_url_safe_for_ssrf(fb)
-            if fb_safe:
-                st2, sn2 = await _probe_url(client, fb)
-                v1 = _probe_verdict(st2, sn2)
-                # Exhibit was verified missing (404 / NoSuchKey). Prefer filing index even
-                # when index probe is inconclusive (503 maintenance): better URL than a dead exhibit.
-                if v1 is True or v1 is None:
-                    logger.info(
-                        "source URL repaired via EDGAR index: %s -> %s",
-                        normalized[:80],
-                        fb[:80],
-                    )
-                    return fb
+        canonical = await submissions_canonical_archive_url(
+            client, normalized, settings
+        )
+        if canonical and canonical != normalized:
+            v_can = await classify(canonical)
+            if v_can is True:
+                logger.info(
+                    "source URL repaired via submissions primaryDocument: %s -> %s",
+                    normalized[:80],
+                    canonical[:80],
+                )
+                return canonical
+
+        folder_index = edgar_filing_index_fallback_url(normalized)
+        for fb in edgar_filing_fallback_candidates(normalized):
+            if fb == normalized or (canonical and fb == canonical):
+                continue
+            fb_safe, _fb_reason = assert_url_safe_for_ssrf(fb)
+            if not fb_safe:
+                continue
+            v_fb = await classify(fb)
+            if v_fb is True:
+                logger.info(
+                    "source URL repaired via EDGAR fallback: %s -> %s",
+                    normalized[:80],
+                    fb[:80],
+                )
+                return fb
+            if (
+                v_fb is None
+                and folder_index
+                and fb.rstrip("/") == folder_index.rstrip("/")
+            ):
+                logger.info(
+                    "source URL repaired via EDGAR folder-index (ambiguous probe): "
+                    "%s -> %s",
+                    normalized[:80],
+                    fb[:80],
+                )
+                return fb
 
         logger.info(
-            "source URL missing and no usable EDGAR index (status=%s): %s",
-            status,
-            normalized[:120],
+            "source URL missing after repair ladder: %s", normalized[:120]
         )
         return None
 
@@ -275,9 +480,17 @@ async def sanitize_answer_sources_urls(
                 if not u:
                     continue
                 title = str(src.get("title") or "").strip() or u
-                final = await resolve_budgeted(u)
-                if final:
-                    new_sources.append({"title": title, "url": final})
+                nu = normalize_sec_edgar_source_url(u)
+                probe_this = settings.source_url_verify_enabled and (
+                    not settings.source_url_verify_edgar_only
+                    or is_sec_archives_edgar_verify_target(nu)
+                )
+                if probe_this:
+                    final = await resolve_budgeted(u)
+                    if final:
+                        new_sources.append({"title": title, "url": final})
+                else:
+                    new_sources.append({"title": title, "url": nu})
             aq.sources = new_sources
 
 

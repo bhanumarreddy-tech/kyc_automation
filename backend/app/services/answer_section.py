@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import date
 
 from google.genai import types
 
@@ -211,9 +212,16 @@ def _build_user_message(
         f"  - serial_no={q.serial_no}: {q.question}" for q in questions
     ]
     preamble = issuer_sec_hint or ""
+    year = date.today().year
+    recency_anchor = (
+        "Prefer factual support dated in or near the present calendar year "
+        f"({year}), especially newest SEC EDGAR 10-K / 10-Q / DEF 14A / 8-K "
+        "documents when answering facts that evolve over time.\n\n"
+    )
     return (
         f"Company: {company}\n"
         + preamble
+        + recency_anchor
         + f"Section {section_no}: {section_name}\n\n"
         f"Answer the following KYC questions about this company. You "
         f"MUST use search to ground every answer in live, "
