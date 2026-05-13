@@ -10,7 +10,12 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
@@ -25,6 +30,8 @@ logging.basicConfig(
     level=_log_level if isinstance(_log_level, int) else logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
 )
+
+_http_logger = logging.getLogger("app.http")
 
 
 @asynccontextmanager
@@ -45,6 +52,31 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(HTTPException)
+async def _log_http_exception(request: Request, exc: HTTPException):
+    if exc.status_code >= 400:
+        _http_logger.warning(
+            "%s %s -> HTTP %s detail=%r",
+            request.method,
+            request.url.path,
+            exc.status_code,
+            exc.detail,
+        )
+    return await http_exception_handler(request, exc)
+
+
+@app.exception_handler(RequestValidationError)
+async def _log_request_validation(request: Request, exc: RequestValidationError):
+    _http_logger.warning(
+        "%s %s -> validation failed: %s",
+        request.method,
+        request.url.path,
+        exc.errors(),
+    )
+    return await request_validation_exception_handler(request, exc)
+
 
 app.add_middleware(
     CORSMiddleware,

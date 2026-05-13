@@ -38,6 +38,11 @@ async def process_kyc(
     files: list[UploadFile] | None = File(default=None),
     reference_urls: Annotated[list[str] | None, Form()] = None,
 ) -> ProcessResponse:
+    t0 = time.perf_counter()
+
+    def _elapsed() -> float:
+        return time.perf_counter() - t0
+
     settings = get_settings()
     if not settings.gemini_api_key:
         raise HTTPException(
@@ -46,6 +51,12 @@ async def process_kyc(
         )
 
     company = company_name.strip()
+    logger.info(
+        "process_kyc: start elapsed=%.3fs company_name_len=%d multipart fields parsed",
+        _elapsed(),
+        len(company_name),
+    )
+
     if not company:
         raise HTTPException(status_code=400, detail="company_name is required")
 
@@ -57,11 +68,34 @@ async def process_kyc(
     if url_err:
         raise HTTPException(status_code=400, detail=url_err)
     assert ok_urls is not None
+    logger.info(
+        "process_kyc: reference URLs validated elapsed=%.3fs count=%d",
+        _elapsed(),
+        len(ok_urls),
+    )
 
+    file_list = files or []
+    logger.info(
+        "process_kyc: reading %d uploaded file(s) into memory elapsed=%.3fs",
+        len(file_list),
+        _elapsed(),
+    )
     uploads: list[tuple[str, bytes, str]] = []
-    for upload in files or []:
+    for idx, upload in enumerate(file_list, start=1):
+        read_start = time.perf_counter()
         data = await upload.read()
-        uploads.append((upload.filename or "document", data, upload.content_type or ""))
+        read_ms = (time.perf_counter() - read_start) * 1000
+        name = upload.filename or "document"
+        uploads.append((name, data, upload.content_type or ""))
+        logger.info(
+            "process_kyc: upload %d/%d read name=%r bytes=%d read_ms=%.0f elapsed=%.3fs",
+            idx,
+            len(file_list),
+            name,
+            len(data),
+            read_ms,
+            _elapsed(),
+        )
 
     total_payload = sum(len(raw) for _, raw, _ in uploads)
     logger.info(
@@ -97,19 +131,32 @@ async def process_kyc(
                     "Configure Postgres / DATABASE_PASSWORD as for History."
                 ),
             )
+        logger.info(
+            "process_kyc: storing %d file(s) in object storage elapsed=%.3fs",
+            len(uploads),
+            _elapsed(),
+        )
         attached_documents = await upload_submission_files(
             settings,
             submission_id_uuid,
             uploads,
         )
+        logger.info("process_kyc: object storage upload done elapsed=%.3fs", _elapsed())
 
+    logger.info("process_kyc: pipeline starting elapsed=%.3fs", _elapsed())
     pipeline_started = time.perf_counter()
     rows = await run_pipeline(company, uploads, reference_urls=ok_urls)
     duration_ms = int((time.perf_counter() - pipeline_started) * 1000)
+    logger.info(
+        "process_kyc: pipeline finished duration_ms=%d elapsed=%.3fs",
+        duration_ms,
+        _elapsed(),
+    )
 
     submission_id_out: str | None = None
     saved_at_out: datetime | None = None
     if maker is not None:
+        logger.info("process_kyc: saving submission to database elapsed=%.3fs", _elapsed())
         async with maker() as db_session:
             record = await create_kyc_submission(
                 db_session,
@@ -123,6 +170,11 @@ async def process_kyc(
             await db_session.commit()
             submission_id_out = str(record.id)
             saved_at_out = record.created_at
+        logger.info(
+            "process_kyc: submission saved id=%s elapsed=%.3fs",
+            submission_id_out,
+            _elapsed(),
+        )
 
     return ProcessResponse(
         rows=rows,
