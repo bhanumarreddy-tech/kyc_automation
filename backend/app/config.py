@@ -84,6 +84,10 @@ SOURCE_URL_VERIFY_MAX_URLS = 250  # deduped probes per submission; 0 = unlimited
 # chunk URIs so Sources reflect URLs the API actually retrieved (when chunks are present).
 ANSWER_SOURCES_USE_GROUNDING_METADATA = True
 
+# Max clickable sources per answered row after reordering (SEC hub links first when
+# an EDGAR match exists; leftover slots filled from grounding / search citations).
+ANSWER_SOURCES_MAX_COUNT = 3
+
 
 # Railway Postgres — non-secret connection defaults (match Railway Postgres plugin outputs).
 # Password comes only from env (DATABASE_PASSWORD / POSTGRES_PASSWORD / PGPASSWORD).
@@ -110,6 +114,18 @@ def _postgres_password() -> str:
         or os.environ.get("POSTGRES_PASSWORD", "").strip()
         or os.environ.get("PGPASSWORD", "").strip()
     )
+
+
+def _env_int_clamped(name: str, default: int, *, lo: int, hi: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        val = default
+    else:
+        try:
+            val = int(raw)
+        except ValueError:
+            val = default
+    return max(lo, min(hi, val))
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -186,6 +202,7 @@ class Settings:
     source_url_verify_timeout_seconds: float = SOURCE_URL_VERIFY_TIMEOUT_SECONDS
     source_url_verify_max_urls: int = SOURCE_URL_VERIFY_MAX_URLS
     answer_sources_use_grounding_metadata: bool = ANSWER_SOURCES_USE_GROUNDING_METADATA
+    answer_sources_max_count: int = ANSWER_SOURCES_MAX_COUNT
 
     def s3_ready(self) -> bool:
         return bool(
@@ -278,5 +295,11 @@ def get_settings() -> Settings:
         answer_sources_use_grounding_metadata=_env_bool(
             "ANSWER_SOURCES_USE_GROUNDING_METADATA",
             ANSWER_SOURCES_USE_GROUNDING_METADATA,
+        ),
+        answer_sources_max_count=_env_int_clamped(
+            "ANSWER_SOURCES_MAX_COUNT",
+            ANSWER_SOURCES_MAX_COUNT,
+            lo=2,
+            hi=3,
         ),
     )

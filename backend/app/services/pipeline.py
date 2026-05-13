@@ -23,7 +23,10 @@ from app.services.answer_section import AnsweredQuestion, answer_section
 from app.services.documents import parse_documents
 from app.services.reference_urls import ingest_reference_urls
 from app.services.sec_filings_hub import inject_sec_hub_into_answers, resolve_sec_filings_hub
-from app.services.source_urls import sanitize_answer_sources_urls
+from app.services.source_urls import (
+    prioritize_and_cap_answer_sources,
+    sanitize_answer_sources_urls,
+)
 from app.services.validate_section import ValidationResult, validate_section
 
 logger = logging.getLogger(__name__)
@@ -110,6 +113,11 @@ async def run_pipeline(
     inject_sec_hub_into_answers(answers_per_section, sec_hub)
 
     await sanitize_answer_sources_urls(answers_per_section, settings)
+    prioritize_and_cap_answer_sources(
+        answers_per_section,
+        settings,
+        verification_hub_sources=sec_hub.hub_sources if sec_hub else None,
+    )
 
     validation_tasks = [
         _bounded_validate(

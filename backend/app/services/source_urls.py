@@ -17,6 +17,7 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 
 from app.config import Settings
+from app.services.gemini_client import normalize_source_url_for_match
 from app.services.reference_urls import (
     assert_url_safe_for_ssrf,
     reference_fetch_user_agent,
@@ -278,3 +279,78 @@ async def sanitize_answer_sources_urls(
                 if final:
                     new_sources.append({"title": title, "url": final})
             aq.sources = new_sources
+
+
+def prioritize_and_cap_answer_sources(
+    sections: list[list[Any]],
+    settings: Settings,
+    *,
+    verification_hub_sources: list[dict[str, str]] | None,
+) -> None:
+    """Prefer SEC hub URLs first, then other citations; dedupe by URL; hard cap."""
+    max_n = max(1, settings.answer_sources_max_count)
+
+    hub_norm_order: list[str] = []
+    if verification_hub_sources:
+        seenhub: set[str] = set()
+        for hs in verification_hub_sources:
+            if not isinstance(hs, dict):
+                continue
+            u = normalize_sec_edgar_source_url(str(hs.get("url") or "").strip())
+            if not u:
+                continue
+            nk = normalize_source_url_for_match(u)
+            if not nk or nk in seenhub:
+                continue
+            seenhub.add(nk)
+            hub_norm_order.append(nk)
+
+    for sec in sections:
+        for aq in sec:
+            sources = getattr(aq, "sources", None)
+            if not isinstance(sources, list) or not sources:
+                continue
+
+            first_by_norm: dict[str, dict[str, str]] = {}
+            for src in sources:
+                if not isinstance(src, dict):
+                    continue
+                u = str(src.get("url") or "").strip()
+                if not u:
+                    continue
+                nk = normalize_source_url_for_match(u)
+                if not nk:
+                    continue
+                if nk not in first_by_norm:
+                    title = str(src.get("title") or "").strip() or u
+                    first_by_norm[nk] = {"title": title, "url": u}
+
+            out: list[dict[str, str]] = []
+            used: set[str] = set()
+
+            for nk in hub_norm_order:
+                if len(out) >= max_n:
+                    break
+                row = first_by_norm.get(nk)
+                if row is None:
+                    continue
+                out.append(dict(row))
+                used.add(nk)
+
+            if len(out) < max_n:
+                for src in sources:
+                    if len(out) >= max_n:
+                        break
+                    if not isinstance(src, dict):
+                        continue
+                    u = str(src.get("url") or "").strip()
+                    if not u:
+                        continue
+                    nk = normalize_source_url_for_match(u)
+                    if not nk or nk in used:
+                        continue
+                    title = str(src.get("title") or "").strip() or u
+                    out.append({"title": title, "url": u})
+                    used.add(nk)
+
+            aq.sources = out
