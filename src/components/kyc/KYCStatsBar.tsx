@@ -16,7 +16,8 @@ const isAnswered = (row: KYCRow): boolean => {
   return a !== "" && a !== "not found";
 };
 
-const isUnsupported = (row: KYCRow): boolean => row.validation === "No";
+const needsAiValidationReview = (row: KYCRow): boolean =>
+  row.validation !== "Yes";
 
 export function KYCStatsBar({ rows }: KYCStatsBarProps) {
   const stats = useMemo(() => {
@@ -24,9 +25,7 @@ export function KYCStatsBar({ rows }: KYCStatsBarProps) {
     const answered = rows.filter(isAnswered).length;
     const completion = total === 0 ? 0 : Math.round((answered / total) * 100);
 
-    const needsReviewRows = rows.filter(
-      (row) => !isAnswered(row) || isUnsupported(row)
-    );
+    const needsReviewRows = rows.filter(needsAiValidationReview);
 
     return {
       total,
@@ -75,7 +74,7 @@ export function KYCStatsBar({ rows }: KYCStatsBarProps) {
               {stats.needsReviewCount}
             </div>
             <div className="text-xs text-muted-foreground">
-              Missing answers or not supported by uploaded documents
+              Rows where AI validation is not Yes
             </div>
           </div>
         </div>

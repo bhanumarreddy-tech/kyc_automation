@@ -82,16 +82,15 @@ class ProcessResponse(BaseModel):
 
 
 def history_metrics_from_rows_json(rows: list) -> tuple[int, int]:
-    """Match Results UI/KYC stats: completion % answered, review = missing answers or validation ``No``."""
+    """Completion % answered; needs_review = AI validation is not ``Yes`` (pending, ``No``, or empty)."""
 
     def _answered(row: dict) -> bool:
         a = str(row.get("answer", "") or "").strip().lower()
         return bool(a and a != "not found")
 
     def _needs_review(row: dict) -> bool:
-        if not _answered(row):
-            return True
-        return row.get("validation") == "No"
+        v = str(row.get("validation", "") or "").strip()
+        return v != "Yes"
 
     total = len(rows)
     if total == 0:
