@@ -27,6 +27,23 @@ from app.services.reference_urls import (
 
 logger = logging.getLogger(__name__)
 
+
+def hostname_domain_priority_rank(url: str, suffixes: tuple[str, ...]) -> int:
+    """Return the best (lowest) matching index into *suffixes*, or len(suffixes) if none."""
+    parsed = urlparse((url or "").strip())
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return len(suffixes)
+    best = len(suffixes)
+    for i, suf in enumerate(suffixes):
+        s = suf.lower().strip().lstrip(".")
+        if not s:
+            continue
+        if host == s or host.endswith("." + s):
+            best = min(best, i)
+    return best
+
+
 SEC_DATA_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _ARCHIVES_DOC_PATH_RE = re.compile(
     r"/Archives/edgar/data/\d+/[^/?#]+/[^/?#]+", re.I
@@ -502,10 +519,13 @@ def prioritize_and_cap_answer_sources(
 ) -> None:
     """Reorder URLs already cited per row so SEC issuer hub matches come first,
 
-    then other domains in row order; dedupe; cap length. Hub links only appear when
-    the model or grounding actually cited them (never injected wholesale per row).
+    then government/regulator host suffixes in ``answer_sources_domain_priority_suffixes``,
+    then remaining URLs in original row order; dedupe; cap length. Hub links only
+    appear when the model or grounding actually cited them (never injected wholesale
+    per row).
     """
     max_n = max(1, settings.answer_sources_max_count)
+    domain_suffixes = settings.answer_sources_domain_priority_suffixes
 
     hub_norm_order: list[str] = []
     if verification_hub_sources:
@@ -529,7 +549,9 @@ def prioritize_and_cap_answer_sources(
                 continue
 
             first_by_norm: dict[str, dict[str, str]] = {}
-            for src in sources:
+            norm_order: list[str] = []
+            first_index_by_norm: dict[str, int] = {}
+            for idx, src in enumerate(sources):
                 if not isinstance(src, dict):
                     continue
                 u = str(src.get("url") or "").strip()
@@ -541,6 +563,8 @@ def prioritize_and_cap_answer_sources(
                 if nk not in first_by_norm:
                     title = str(src.get("title") or "").strip() or u
                     first_by_norm[nk] = {"title": title, "url": u}
+                    norm_order.append(nk)
+                    first_index_by_norm[nk] = idx
 
             out: list[dict[str, str]] = []
             used: set[str] = set()
@@ -555,19 +579,24 @@ def prioritize_and_cap_answer_sources(
                 used.add(nk)
 
             if len(out) < max_n:
-                for src in sources:
+                remainder: list[tuple[int, int, str, dict[str, str]]] = []
+                for nk in norm_order:
+                    if nk in used:
+                        continue
+                    row = first_by_norm[nk]
+                    dom_rank = hostname_domain_priority_rank(
+                        row["url"], domain_suffixes
+                    )
+                    remainder.append(
+                        (dom_rank, first_index_by_norm[nk], nk, row)
+                    )
+                remainder.sort(key=lambda t: (t[0], t[1]))
+                for _dr, _fi, nk, row in remainder:
                     if len(out) >= max_n:
                         break
-                    if not isinstance(src, dict):
+                    if nk in used:
                         continue
-                    u = str(src.get("url") or "").strip()
-                    if not u:
-                        continue
-                    nk = normalize_source_url_for_match(u)
-                    if not nk or nk in used:
-                        continue
-                    title = str(src.get("title") or "").strip() or u
-                    out.append({"title": title, "url": u})
+                    out.append(dict(row))
                     used.add(nk)
 
             aq.sources = out

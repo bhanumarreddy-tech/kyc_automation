@@ -90,6 +90,29 @@ ANSWER_SOURCES_USE_GROUNDING_METADATA = True
 # SEC issuer hub URLs are ordered ahead of other cited links when overlap exists).
 ANSWER_SOURCES_MAX_COUNT = 3
 
+# Hostname suffix priority (lower index = earlier after SEC hub dedupe). Used by
+# prioritize_and_cap_answer_sources for Tier-1-style government / regulator domains.
+ANSWER_SOURCES_DOMAIN_PRIORITY_SUFFIXES: tuple[str, ...] = (
+    "sec.gov",
+    "edgarfiling.sec.gov",
+    "data.sec.gov",
+    "gov.uk",
+    "companieshouse.gov.uk",
+    "find-and-update.company-information.service.gov.uk",
+    "europa.eu",
+    "ec.europa.eu",
+    "gov.sg",
+    "acra.gov.sg",
+    "bizfile.gov.sg",
+    "infogreffe.fr",
+    "infogreffe.com",
+    "gouv.fr",
+    "treasury.gov",
+    "ofac.treasury.gov",
+    "finra.org",
+    "fca.org.uk",
+)
+
 
 # Railway Postgres — non-secret connection defaults (match Railway Postgres plugin outputs).
 # Password comes only from env (DATABASE_PASSWORD / POSTGRES_PASSWORD / PGPASSWORD).
@@ -206,6 +229,9 @@ class Settings:
     source_url_verify_max_urls: int = SOURCE_URL_VERIFY_MAX_URLS
     answer_sources_use_grounding_metadata: bool = ANSWER_SOURCES_USE_GROUNDING_METADATA
     answer_sources_max_count: int = ANSWER_SOURCES_MAX_COUNT
+    answer_sources_domain_priority_suffixes: tuple[str, ...] = (
+        ANSWER_SOURCES_DOMAIN_PRIORITY_SUFFIXES
+    )
 
     def s3_ready(self) -> bool:
         return bool(
@@ -308,4 +334,5 @@ def get_settings() -> Settings:
             lo=2,
             hi=3,
         ),
+        answer_sources_domain_priority_suffixes=ANSWER_SOURCES_DOMAIN_PRIORITY_SUFFIXES,
     )

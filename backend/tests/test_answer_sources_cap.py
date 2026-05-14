@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from app.config import ANSWER_SOURCES_DOMAIN_PRIORITY_SUFFIXES
 from app.services.source_urls import prioritize_and_cap_answer_sources
 
 
 def _settings(max_count: int = 3):
     return MagicMock(
         answer_sources_max_count=max_count,
+        answer_sources_domain_priority_suffixes=ANSWER_SOURCES_DOMAIN_PRIORITY_SUFFIXES,
     )
 
 
@@ -52,6 +54,19 @@ def test_without_hub_truncates_original_order() -> None:
     prioritize_and_cap_answer_sources([[aq]], _settings(2), verification_hub_sources=None)
     assert len(aq.sources) == 2
     assert aq.sources[0]["url"] == "https://a.example/1"
+
+
+def test_priority_suffix_hosts_before_generic_when_no_hub_overlap() -> None:
+    aq = MagicMock()
+    aq.sources = [
+        {"title": "news", "url": "https://news.example/item"},
+        {"title": "CH", "url": "https://find-and-update.company-information.service.gov.uk/company/123"},
+        {"title": "blog", "url": "https://blog.example/x"},
+    ]
+    prioritize_and_cap_answer_sources([[aq]], _settings(2), verification_hub_sources=None)
+    assert len(aq.sources) == 2
+    assert "company-information.service.gov.uk" in aq.sources[0]["url"]
+    assert aq.sources[1]["url"] == "https://news.example/item"
 
 
 def test_hub_slot_skipped_when_url_missing_from_answer_sources() -> None:

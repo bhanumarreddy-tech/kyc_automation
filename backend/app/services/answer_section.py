@@ -16,6 +16,7 @@ from datetime import date
 from google.genai import types
 
 from app.config import get_settings
+from app.kyc_evidence_anchors import section_hierarchy_instructions
 from app.questions import KYCQuestion
 from app.services.gemini_client import (
     count_grounding_web_queries,
@@ -218,10 +219,15 @@ def _build_user_message(
         f"({year}), especially newest SEC EDGAR 10-K / 10-Q / DEF 14A / 8-K "
         "documents when answering facts that evolve over time.\n\n"
     )
+    section_priority = section_hierarchy_instructions(section_no)
+    priority_block = (
+        f"{section_priority}\n\n" if section_priority.strip() else ""
+    )
     return (
         f"Company: {company}\n"
         + preamble
         + recency_anchor
+        + priority_block
         + f"Section {section_no}: {section_name}\n\n"
         f"Answer the following KYC questions about this company. You "
         f"MUST use search to ground every answer in live, "
