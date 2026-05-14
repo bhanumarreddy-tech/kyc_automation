@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,13 +22,32 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Upload, FileText, Home, X, ArrowLeft, Loader2, Link2, RefreshCw } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Upload, FileText, Home, X, ArrowLeft, Loader2, Link2, RefreshCw, ListFilter } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import ProcessingView from "@/components/kyc/ProcessingView";
 import { ResultsTable } from "@/components/kyc/ResultsTable";
 import { kycQuestions, hydrateKycRows } from "@/data/kycQuestions";
 import type { KYCRow } from "@/data/kycQuestions";
 import { apiUrl } from "@/lib/api";
+import {
+  appendAuditLog,
+  cloneRowsBaseline,
+  getAnalystName,
+  setAnalystName,
+  getSignOff,
+  setSignOff,
+  loadUrlPresets,
+  addUrlPreset,
+  deleteUrlPreset,
+  type UrlPreset,
+} from "@/lib/kycAnalystToolkit";
 
 type WorkflowStep = "upload" | "processing" | "results";
 type MainTab = "run" | "history";
@@ -105,19 +124,12 @@ function parseReferenceUrlsFromText(raw: string): string[] {
   return out;
 }
 
-function historyDetailCanRerun(meta: {
-  attachedDocuments: AttachedDocumentItem[];
-}): boolean {
-  if (meta.attachedDocuments.length === 0) {
-    return true;
-  }
-  return meta.attachedDocuments.every((d) => Boolean(d.objectKey));
-}
-
-interface RerunConfirmPayload {
+interface RerunEditState {
   submissionId: string;
   companyLabel: string;
-  displayCounts: { files: number; urls: number };
+  retainedObjectKeys: string[];
+  referenceUrlsText: string;
+  newFiles: File[];
 }
 
 const API_ENDPOINT = apiUrl("/api/process");
@@ -157,7 +169,28 @@ export default function KYCAutomation() {
     null,
   );
   const [rerunInFlight, setRerunInFlight] = useState(false);
-  const [rerunConfirm, setRerunConfirm] = useState<RerunConfirmPayload | null>(null);
+  const [rerunEdit, setRerunEdit] = useState<RerunEditState | null>(null);
+  const rerunFileInputRef = useRef<HTMLInputElement>(null);
+
+  const [comparisonBaseline, setComparisonBaseline] = useState<KYCRow[] | null>(null);
+  const [comparisonLabel, setComparisonLabel] = useState<string | null>(null);
+  const [lastSubmissionMeta, setLastSubmissionMeta] = useState<{
+    submissionId: string | null;
+    savedAt: string | null;
+  }>({ submissionId: null, savedAt: null });
+  const [historyDetailCreatedAt, setHistoryDetailCreatedAt] = useState<string | null>(null);
+  const [analystName, setAnalystNameState] = useState(() => getAnalystName());
+  const [signOffChecked, setSignOffChecked] = useState(false);
+
+  const [urlPresetName, setUrlPresetName] = useState("");
+  const [urlPresets, setUrlPresets] = useState<UrlPreset[]>(() => loadUrlPresets());
+  const [urlPresetApplyId, setUrlPresetApplyId] = useState<string>("");
+
+  const [historyFilterCompany, setHistoryFilterCompany] = useState("");
+  const [historyFilterMinCompletion, setHistoryFilterMinCompletion] = useState("");
+  const [historyFilterNeedsReviewOnly, setHistoryFilterNeedsReviewOnly] = useState(false);
+  const [historyFilterDateFrom, setHistoryFilterDateFrom] = useState("");
+  const [historyFilterDateTo, setHistoryFilterDateTo] = useState("");
 
   useEffect(() => {
     const preventDefaults = (e: DragEvent) => {
@@ -211,6 +244,54 @@ export default function KYCAutomation() {
       cancelled = true;
     };
   }, [mainTab, historyDetailId]);
+
+  const filteredHistoryItems = useMemo(() => {
+    const companyQ = historyFilterCompany.trim().toLowerCase();
+    const minC = historyFilterMinCompletion.trim();
+    const minNum = minC === "" ? null : parseInt(minC, 10);
+    const fromTs = historyFilterDateFrom ? new Date(historyFilterDateFrom).getTime() : null;
+    const toTs = historyFilterDateTo ? new Date(historyFilterDateTo).getTime() : null;
+
+    return historyItems.filter((item) => {
+      if (companyQ && !item.companyName.toLowerCase().includes(companyQ)) return false;
+      if (minNum !== null && !Number.isNaN(minNum)) {
+        if ((item.completionPercent ?? 0) < minNum) return false;
+      }
+      if (historyFilterNeedsReviewOnly && (item.needsReviewCount ?? 0) <= 0) return false;
+      const t = new Date(item.createdAt).getTime();
+      if (fromTs !== null && !Number.isNaN(fromTs) && t < fromTs) return false;
+      if (toTs !== null && !Number.isNaN(toTs)) {
+        const end = toTs + 86400000;
+        if (t >= end) return false;
+      }
+      return true;
+    });
+  }, [
+    historyItems,
+    historyFilterCompany,
+    historyFilterMinCompletion,
+    historyFilterNeedsReviewOnly,
+    historyFilterDateFrom,
+    historyFilterDateTo,
+  ]);
+
+  const activeSubmissionId = historyDetailId ?? lastSubmissionMeta.submissionId;
+  const activeSavedAt = historyDetailCreatedAt ?? lastSubmissionMeta.savedAt;
+
+  useEffect(() => {
+    if (activeSubmissionId) setSignOffChecked(getSignOff(activeSubmissionId));
+    else setSignOffChecked(false);
+  }, [activeSubmissionId]);
+
+  const recordAudit = useCallback(
+    (e: { action: string; analyst?: string; detail?: Record<string, unknown> }) => {
+      appendAuditLog({
+        ...e,
+        analyst: e.analyst ?? (analystName.trim() || undefined),
+      });
+    },
+    [analystName],
+  );
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -267,6 +348,7 @@ export default function KYCAutomation() {
     data: {
       rows: KYCRow[];
       submissionId?: string;
+      savedAt?: string | null;
       durationMs?: number | null;
       attachedDocuments?: AttachedDocumentItem[];
       referenceUrls?: string[];
@@ -275,6 +357,14 @@ export default function KYCAutomation() {
   ) => {
     setRows(hydrateKycRows(data.rows));
     setStep("results");
+
+    setLastSubmissionMeta({
+      submissionId:
+        typeof data.submissionId === "string" && data.submissionId.length > 0
+          ? data.submissionId
+          : null,
+      savedAt: data.savedAt ?? null,
+    });
 
     setLastRunMeta({
       durationMs:
@@ -311,9 +401,9 @@ export default function KYCAutomation() {
     });
   };
 
-  const runRerunBySubmissionId = async (
-    submissionId: string,
+  const runRerunWithFormData = async (
     companyLabel: string,
+    formData: FormData,
     displayCounts: { files: number; urls: number },
   ) => {
     setCompanyName(companyLabel.trim());
@@ -328,8 +418,7 @@ export default function KYCAutomation() {
     try {
       const res = await fetch(RERUN_ENDPOINT, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ submissionId }),
+        body: formData,
       });
 
       if (!res.ok) {
@@ -340,6 +429,7 @@ export default function KYCAutomation() {
       const data = (await res.json()) as {
         rows: KYCRow[];
         submissionId?: string;
+        savedAt?: string | null;
         durationMs?: number | null;
         attachedDocuments?: AttachedDocumentItem[];
         referenceUrls?: string[];
@@ -365,35 +455,60 @@ export default function KYCAutomation() {
   };
 
   const requestRerunFromHistoryDetail = () => {
-    if (!historyDetailId || !historyRunMeta || !historyDetailCanRerun(historyRunMeta)) {
+    if (!historyDetailId || !historyRunMeta) {
       return;
     }
-    setRerunConfirm({
+    const keys = historyRunMeta.attachedDocuments
+      .map((d) => d.objectKey)
+      .filter((k): k is string => Boolean(k));
+    setRerunEdit({
       submissionId: historyDetailId,
       companyLabel: companyName.trim(),
-      displayCounts: {
-        files: historyRunMeta.attachedDocuments.length,
-        urls: historyRunMeta.referenceUrls.length,
-      },
+      retainedObjectKeys: keys,
+      referenceUrlsText: historyRunMeta.referenceUrls.join("\n"),
+      newFiles: [],
     });
   };
 
   const confirmRerun = () => {
-    const payload = rerunConfirm;
-    setRerunConfirm(null);
-    if (!payload || !payload.companyLabel) {
+    const edit = rerunEdit;
+    setRerunEdit(null);
+    if (!edit?.companyLabel) {
       return;
     }
-    void runRerunBySubmissionId(
-      payload.submissionId,
-      payload.companyLabel,
-      payload.displayCounts,
-    );
+    setComparisonBaseline(cloneRowsBaseline(rows));
+    setComparisonLabel(`Submission ${edit.submissionId.slice(0, 8)}…`);
+    recordAudit({
+      action: "rerun_started",
+      detail: {
+        priorSubmissionId: edit.submissionId,
+        retainedKeys: edit.retainedObjectKeys.length,
+        newFiles: edit.newFiles.length,
+      },
+    });
+
+    const refUrls = parseReferenceUrlsFromText(edit.referenceUrlsText);
+    const formData = new FormData();
+    formData.append("submission_id", edit.submissionId);
+    for (const u of refUrls) {
+      formData.append("reference_urls", u);
+    }
+    for (const k of edit.retainedObjectKeys) {
+      formData.append("retain_object_keys", k);
+    }
+    for (const f of edit.newFiles) {
+      formData.append("files", f, f.name);
+    }
+    void runRerunWithFormData(edit.companyLabel, formData, {
+      files: edit.retainedObjectKeys.length + edit.newFiles.length,
+      urls: refUrls.length,
+    });
   };
 
   const closeHistoryDetail = () => {
     setHistoryDetailId(null);
     setHistoryRunMeta(null);
+    setHistoryDetailCreatedAt(null);
     setRows([]);
     setCompanyName("");
     setLastRunMeta(null);
@@ -419,6 +534,7 @@ export default function KYCAutomation() {
       const data = (await res.json()) as {
         companyName: string;
         rows: KYCRow[];
+        createdAt: string;
         attachedDocuments?: AttachedDocumentItem[];
         durationMs?: number | null;
         referenceUrls?: string[];
@@ -428,6 +544,7 @@ export default function KYCAutomation() {
       }
       setCompanyName(data.companyName);
       setRows(hydrateKycRows(data.rows));
+      setHistoryDetailCreatedAt(data.createdAt ?? null);
       setHistoryRunMeta({
         attachedDocuments: Array.isArray(data.attachedDocuments)
           ? data.attachedDocuments
@@ -472,6 +589,9 @@ export default function KYCAutomation() {
       return;
     }
 
+    setComparisonBaseline(null);
+    setComparisonLabel(null);
+
     const refUrls = parseReferenceUrlsFromText(referenceUrlsText);
     setProcessingCounts({ files: files.length, urls: refUrls.length });
     setStep("processing");
@@ -500,6 +620,7 @@ export default function KYCAutomation() {
       const data = (await res.json()) as {
         rows: KYCRow[];
         submissionId?: string;
+        savedAt?: string | null;
         durationMs?: number | null;
         attachedDocuments?: AttachedDocumentItem[];
         referenceUrls?: string[];
@@ -531,9 +652,13 @@ export default function KYCAutomation() {
     setRows([]);
     setCompletedRunDownloads(null);
     setLastRunMeta(null);
+    setLastSubmissionMeta({ submissionId: null, savedAt: null });
+    setHistoryDetailCreatedAt(null);
+    setComparisonBaseline(null);
+    setComparisonLabel(null);
     setProcessingCounts(null);
     setRerunInFlight(false);
-    setRerunConfirm(null);
+    setRerunEdit(null);
   };
 
   const handleRowChange = (serialNo: number, updates: Partial<KYCRow>) => {
@@ -551,6 +676,30 @@ export default function KYCAutomation() {
       setStep("upload");
     } else if (step === "upload") {
       navigate("/");
+    }
+  };
+
+  const evidenceAttached =
+    historyDetailId && historyRunMeta
+      ? historyRunMeta.attachedDocuments
+      : completedRunDownloads?.documents ?? [];
+  const evidenceRefs =
+    historyDetailId && historyRunMeta
+      ? historyRunMeta.referenceUrls
+      : lastRunMeta?.referenceUrls ?? [];
+
+  const openNextNeedingReview = () => {
+    const candidates = [...filteredHistoryItems]
+      .filter((i) => (i.needsReviewCount ?? 0) > 0)
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    const next = candidates[0];
+    if (next) void openHistorySubmission(next.submissionId);
+    else {
+      toast({
+        title: "No matching runs",
+        description: "Try loosening filters or pick an item from the table.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -693,6 +842,130 @@ export default function KYCAutomation() {
                   against your materials (in addition to any uploaded files).
                 </p>
               </div>
+
+              <Accordion type="single" collapsible className="w-full border rounded-md px-3">
+                <AccordionItem value="url-presets" className="border-0">
+                  <AccordionTrigger className="text-sm py-3 hover:no-underline">
+                    URL bundles &amp; issuer checklist (local)
+                  </AccordionTrigger>
+                  <AccordionContent className="space-y-4 pb-4 text-sm">
+                    <div className="space-y-2">
+                      <div className="font-medium text-xs text-muted-foreground uppercase tracking-wide">
+                        Saved URL bundles
+                      </div>
+                      <div className="flex flex-wrap gap-2 items-end">
+                        <div className="flex-1 min-w-[160px] space-y-1">
+                          <Label className="text-xs">Apply bundle</Label>
+                          <select
+                            className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                            value={urlPresetApplyId}
+                            onChange={(e) => setUrlPresetApplyId(e.target.value)}
+                          >
+                            <option value="">Select…</option>
+                            {urlPresets.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name} ({p.urls.length} URLs)
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          disabled={!urlPresetApplyId}
+                          onClick={() => {
+                            const p = urlPresets.find((x) => x.id === urlPresetApplyId);
+                            if (!p) return;
+                            const merged = parseReferenceUrlsFromText(
+                              `${referenceUrlsText}\n${p.urls.join("\n")}`,
+                            );
+                            setReferenceUrlsText(merged.join("\n"));
+                            toast({ title: "URLs merged", description: p.name });
+                          }}
+                        >
+                          Merge into list
+                        </Button>
+                      </div>
+                      <div className="flex flex-wrap gap-2 items-end">
+                        <div className="flex-1 min-w-[140px] space-y-1">
+                          <Label htmlFor="preset-name" className="text-xs">
+                            Save current list as
+                          </Label>
+                          <Input
+                            id="preset-name"
+                            value={urlPresetName}
+                            onChange={(e) => setUrlPresetName(e.target.value)}
+                            placeholder="e.g. US bank EDGAR pack"
+                            className="h-9"
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() => {
+                            const urls = parseReferenceUrlsFromText(referenceUrlsText);
+                            if (urls.length === 0) {
+                              toast({
+                                title: "Nothing to save",
+                                description: "Add at least one URL first.",
+                                variant: "destructive",
+                              });
+                              return;
+                            }
+                            addUrlPreset(urlPresetName, urls);
+                            setUrlPresets(loadUrlPresets());
+                            toast({ title: "Bundle saved", description: "Stored in this browser." });
+                          }}
+                        >
+                          Save bundle
+                        </Button>
+                      </div>
+                      {urlPresets.length > 0 && (
+                        <ul className="text-xs space-y-1 text-muted-foreground">
+                          {urlPresets.map((p) => (
+                            <li key={p.id} className="flex items-center justify-between gap-2">
+                              <span>
+                                {p.name}{" "}
+                                <button
+                                  type="button"
+                                  className="text-destructive hover:underline"
+                                  onClick={() => {
+                                    deleteUrlPreset(p.id);
+                                    setUrlPresets(loadUrlPresets());
+                                    if (urlPresetApplyId === p.id) setUrlPresetApplyId("");
+                                  }}
+                                >
+                                  Delete
+                                </button>
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    <div className="space-y-2 border-t pt-3">
+                      <div className="font-medium text-xs text-muted-foreground uppercase tracking-wide">
+                        Typical document checklist
+                      </div>
+                      <ul className="list-disc pl-5 space-y-1 text-muted-foreground text-xs">
+                        <li>
+                          <span className="font-medium text-foreground">Commercial bank:</span> FFIEC
+                          call report link, BHC structure (if applicable), annual report / 10-K, UCC
+                          or charter references.
+                        </li>
+                        <li>
+                          <span className="font-medium text-foreground">Fund / asset manager:</span>
+                          Form ADV Part 2, prospectus or PPM, audited financials, regulatory register
+                          (e.g. SEC IAPD) where relevant.
+                        </li>
+                      </ul>
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
 
               <Button
                 onClick={handleStartProcessing}
@@ -837,6 +1110,29 @@ export default function KYCAutomation() {
               rows={rows}
               onReset={handleReset}
               onRowChange={handleRowChange}
+              comparisonBaseline={comparisonBaseline}
+              comparisonLabel={comparisonLabel}
+              onClearComparison={() => {
+                setComparisonBaseline(null);
+                setComparisonLabel(null);
+              }}
+              submissionMeta={{
+                submissionId: activeSubmissionId,
+                savedAt: activeSavedAt,
+              }}
+              referenceUrls={evidenceRefs}
+              attachedDocuments={evidenceAttached}
+              analystName={analystName}
+              onAnalystNameChange={(name) => {
+                setAnalystNameState(name);
+                setAnalystName(name);
+              }}
+              signOff={signOffChecked}
+              onSignOffChange={(v) => {
+                if (activeSubmissionId) setSignOff(activeSubmissionId, v);
+                setSignOffChecked(v);
+              }}
+              onAudit={recordAudit}
             />
           </div>
             )}
@@ -859,16 +1155,8 @@ export default function KYCAutomation() {
                     type="button"
                     variant="default"
                     className="gap-2"
-                    disabled={
-                      rerunInFlight ||
-                      !historyRunMeta ||
-                      !historyDetailCanRerun(historyRunMeta)
-                    }
-                    title={
-                      historyRunMeta && !historyDetailCanRerun(historyRunMeta)
-                        ? "This saved run has no per-file storage keys. Start a new run and upload again."
-                        : "Run again with the same stored files and reference URLs"
-                    }
+                    disabled={rerunInFlight || !historyRunMeta}
+                    title="Run again with optional edits to stored documents and reference URLs"
                     onClick={requestRerunFromHistoryDetail}
                   >
                     {rerunInFlight ? (
@@ -955,6 +1243,29 @@ export default function KYCAutomation() {
                   rows={rows}
                   onReset={closeHistoryDetail}
                   onRowChange={handleRowChange}
+                  comparisonBaseline={comparisonBaseline}
+                  comparisonLabel={comparisonLabel}
+                  onClearComparison={() => {
+                    setComparisonBaseline(null);
+                    setComparisonLabel(null);
+                  }}
+                  submissionMeta={{
+                    submissionId: activeSubmissionId,
+                    savedAt: activeSavedAt,
+                  }}
+                  referenceUrls={evidenceRefs}
+                  attachedDocuments={evidenceAttached}
+                  analystName={analystName}
+                  onAnalystNameChange={(name) => {
+                    setAnalystNameState(name);
+                    setAnalystName(name);
+                  }}
+                  signOff={signOffChecked}
+                  onSignOffChange={(v) => {
+                    if (activeSubmissionId) setSignOff(activeSubmissionId, v);
+                    setSignOffChecked(v);
+                  }}
+                  onAudit={recordAudit}
                 />
               </>
             )}
@@ -976,8 +1287,111 @@ export default function KYCAutomation() {
                     to store results here.
                   </p>
                 )}
-                {!historyListLoading && historyItems.length > 0 && (
-                  <div className="rounded-md border bg-card">
+                {!historyListLoading &&
+                  historyItems.length > 0 &&
+                  filteredHistoryItems.length === 0 && (
+                    <p className="text-sm text-muted-foreground">
+                      No runs match the current filters. Clear filters to see all{" "}
+                      {historyItems.length} run(s).
+                    </p>
+                  )}
+                {!historyListLoading && filteredHistoryItems.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="rounded-md border bg-muted/20 p-3 space-y-3 text-sm">
+                      <div className="flex flex-wrap items-center gap-2 text-foreground font-medium">
+                        <ListFilter className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                        Review queue filters
+                        <span className="text-xs font-normal text-muted-foreground">
+                          ({filteredHistoryItems.length} of {historyItems.length})
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-3 items-end">
+                        <div className="space-y-1 min-w-[160px] flex-1">
+                          <Label htmlFor="hist-co" className="text-xs">
+                            Client contains
+                          </Label>
+                          <Input
+                            id="hist-co"
+                            value={historyFilterCompany}
+                            onChange={(e) => setHistoryFilterCompany(e.target.value)}
+                            placeholder="Company name"
+                            className="h-9"
+                          />
+                        </div>
+                        <div className="space-y-1 w-24">
+                          <Label htmlFor="hist-minc" className="text-xs">
+                            Min % done
+                          </Label>
+                          <Input
+                            id="hist-minc"
+                            inputMode="numeric"
+                            value={historyFilterMinCompletion}
+                            onChange={(e) => setHistoryFilterMinCompletion(e.target.value)}
+                            placeholder="0"
+                            className="h-9"
+                          />
+                        </div>
+                        <div className="space-y-1 w-[140px]">
+                          <Label htmlFor="hist-from" className="text-xs">
+                            From date
+                          </Label>
+                          <Input
+                            id="hist-from"
+                            type="date"
+                            value={historyFilterDateFrom}
+                            onChange={(e) => setHistoryFilterDateFrom(e.target.value)}
+                            className="h-9"
+                          />
+                        </div>
+                        <div className="space-y-1 w-[140px]">
+                          <Label htmlFor="hist-to" className="text-xs">
+                            To date
+                          </Label>
+                          <Input
+                            id="hist-to"
+                            type="date"
+                            value={historyFilterDateTo}
+                            onChange={(e) => setHistoryFilterDateTo(e.target.value)}
+                            className="h-9"
+                          />
+                        </div>
+                        <div className="flex items-center space-x-2 pb-1">
+                          <Checkbox
+                            id="hist-rev"
+                            checked={historyFilterNeedsReviewOnly}
+                            onCheckedChange={(c) => setHistoryFilterNeedsReviewOnly(c === true)}
+                          />
+                          <Label htmlFor="hist-rev" className="text-xs font-normal cursor-pointer">
+                            Needs review only
+                          </Label>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => void openNextNeedingReview()}
+                        >
+                          Open next needing review
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setHistoryFilterCompany("");
+                            setHistoryFilterMinCompletion("");
+                            setHistoryFilterNeedsReviewOnly(false);
+                            setHistoryFilterDateFrom("");
+                            setHistoryFilterDateTo("");
+                          }}
+                        >
+                          Clear filters
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="rounded-md border bg-card">
                     <Table>
                       <TableHeader>
                         <TableRow>
@@ -997,7 +1411,7 @@ export default function KYCAutomation() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {historyItems.map((item) => {
+                        {filteredHistoryItems.map((item) => {
                           const docs = item.attachedDocuments ?? [];
                           return (
                             <TableRow key={item.submissionId}>
@@ -1102,6 +1516,7 @@ export default function KYCAutomation() {
                       </TableBody>
                     </Table>
                   </div>
+                  </div>
                 )}
               </>
             )}
@@ -1109,45 +1524,190 @@ export default function KYCAutomation() {
         </Tabs>
 
         <AlertDialog
-          open={rerunConfirm !== null}
+          open={rerunEdit !== null}
           onOpenChange={(open) => {
-            if (!open) setRerunConfirm(null);
+            if (!open) setRerunEdit(null);
           }}
         >
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Rerun this KYC job?</AlertDialogTitle>
+          <AlertDialogContent className="max-w-lg max-h-[min(90vh,720px)] flex flex-col overflow-hidden gap-0 p-0">
+            <AlertDialogHeader className="p-6 pb-2 shrink-0">
+              <AlertDialogTitle>Rerun with inputs</AlertDialogTitle>
               <AlertDialogDescription asChild>
-                <div className="text-sm text-muted-foreground space-y-2 text-left">
-                  {rerunConfirm ? (
-                    <>
-                      <p>
-                        This starts a new pipeline run for{" "}
-                        <span className="font-medium text-foreground">
-                          {rerunConfirm.companyLabel}
-                        </span>{" "}
-                        using the same stored inputs as the saved submission.
-                      </p>
-                      <ul className="list-disc space-y-1 pl-5">
-                        <li>
-                          {rerunConfirm.displayCounts.files}{" "}
-                          {rerunConfirm.displayCounts.files === 1 ? "document" : "documents"}
-                        </li>
-                        <li>
-                          {rerunConfirm.displayCounts.urls}{" "}
-                          {rerunConfirm.displayCounts.urls === 1 ? "reference URL" : "reference URLs"}
-                        </li>
-                      </ul>
-                      <p>A new history entry is created when processing completes.</p>
-                    </>
-                  ) : null}
-                </div>
+                <span className="sr-only">
+                  Adjust which stored documents and reference URLs to use for this pipeline
+                  rerun, add new files, then confirm.
+                </span>
               </AlertDialogDescription>
             </AlertDialogHeader>
-            <AlertDialogFooter>
+            {rerunEdit && historyRunMeta ? (
+              <div className="px-6 pb-4 overflow-y-auto flex-1 min-h-0 text-sm space-y-4">
+                <p className="text-muted-foreground">
+                  New run for{" "}
+                  <span className="font-medium text-foreground">{rerunEdit.companyLabel}</span>.
+                  Uncheck documents to drop them, add files or URLs as needed. A new history entry is
+                  created when processing completes.
+                </p>
+                {rerunEdit.retainedObjectKeys.length +
+                  rerunEdit.newFiles.length +
+                  parseReferenceUrlsFromText(rerunEdit.referenceUrlsText).length ===
+                  0 && (
+                  <p className="text-amber-700 dark:text-amber-400 text-xs border border-amber-200 dark:border-amber-900 rounded-md p-2 bg-amber-50/80 dark:bg-amber-950/30">
+                    No documents or reference URLs selected. The run will rely on web search and
+                    other defaults only—consider adding at least one source.
+                  </p>
+                )}
+                <div className="space-y-2">
+                  <div className="text-muted-foreground text-xs uppercase tracking-wide">
+                    Stored documents
+                  </div>
+                  {historyRunMeta.attachedDocuments.length === 0 ? (
+                    <p className="text-muted-foreground">None for this submission.</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {historyRunMeta.attachedDocuments.map((doc, idx) => {
+                        const key = doc.objectKey ?? "";
+                        if (!key) {
+                          return (
+                            <li
+                              key={`legacy-${doc.filename}-${idx}`}
+                              className="flex gap-2 items-start p-2 rounded-md border border-amber-200 dark:border-amber-900 bg-amber-50/50 dark:bg-amber-950/20 text-xs text-amber-800 dark:text-amber-200"
+                            >
+                              <FileText className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
+                              <span>
+                                <span className="font-medium text-foreground">{doc.filename}</span>{" "}
+                                — not kept in storage for rerun. Upload a replacement below or start
+                                a new run from the Run tab.
+                              </span>
+                            </li>
+                          );
+                        }
+                        return (
+                          <li
+                            key={key}
+                            className="flex items-start gap-3 p-2 bg-muted/40 rounded-md border"
+                          >
+                            <Checkbox
+                              id={`rerun-doc-${key}`}
+                              className="mt-0.5"
+                              checked={rerunEdit.retainedObjectKeys.includes(key)}
+                              onCheckedChange={(checked) => {
+                                setRerunEdit((prev) => {
+                                  if (!prev) return prev;
+                                  const next = new Set(prev.retainedObjectKeys);
+                                  if (checked === true) next.add(key);
+                                  else next.delete(key);
+                                  return { ...prev, retainedObjectKeys: [...next] };
+                                });
+                              }}
+                            />
+                            <Label
+                              htmlFor={`rerun-doc-${key}`}
+                              className="text-left font-normal cursor-pointer flex-1 min-w-0 leading-snug"
+                            >
+                              <span className="font-medium text-foreground break-words">
+                                {doc.filename}
+                              </span>
+                            </Label>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-muted-foreground text-xs uppercase tracking-wide">
+                      New files
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-1"
+                      onClick={() => rerunFileInputRef.current?.click()}
+                    >
+                      <Upload className="h-3.5 w-3.5" aria-hidden />
+                      Add files
+                    </Button>
+                  </div>
+                  <input
+                    ref={rerunFileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      const list = e.target.files;
+                      if (!list?.length) return;
+                      setRerunEdit((prev) => {
+                        if (!prev) return prev;
+                        return { ...prev, newFiles: [...prev.newFiles, ...Array.from(list)] };
+                      });
+                      e.target.value = "";
+                    }}
+                  />
+                  {rerunEdit.newFiles.length === 0 ? (
+                    <p className="text-muted-foreground text-xs">No additional files.</p>
+                  ) : (
+                    <ul className="space-y-1">
+                      {rerunEdit.newFiles.map((f, fi) => (
+                        <li
+                          key={`${f.name}-${fi}-${f.size}`}
+                          className="flex items-center gap-2 text-xs border rounded-md px-2 py-1 bg-background"
+                        >
+                          <span className="truncate flex-1" title={f.name}>
+                            {f.name}
+                          </span>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0"
+                            aria-label={`Remove ${f.name}`}
+                            onClick={() =>
+                              setRerunEdit((prev) =>
+                                prev
+                                  ? {
+                                      ...prev,
+                                      newFiles: prev.newFiles.filter((_, i) => i !== fi),
+                                    }
+                                  : prev,
+                            )}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="rerun-reference-urls">Reference URLs (one per line)</Label>
+                  <Textarea
+                    id="rerun-reference-urls"
+                    value={rerunEdit.referenceUrlsText}
+                    onChange={(e) =>
+                      setRerunEdit((prev) =>
+                        prev ? { ...prev, referenceUrlsText: e.target.value } : prev,
+                      )
+                    }
+                    rows={5}
+                    className="font-mono text-xs"
+                    placeholder="https://..."
+                  />
+                </div>
+              </div>
+            ) : null}
+            <AlertDialogFooter className="p-6 pt-2 border-t shrink-0 bg-background">
               <AlertDialogCancel disabled={rerunInFlight}>Cancel</AlertDialogCancel>
               <Button type="button" disabled={rerunInFlight} onClick={confirmRerun}>
-                Confirm rerun
+                {rerunInFlight ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" aria-hidden />
+                    Starting…
+                  </>
+                ) : (
+                  "Start rerun"
+                )}
               </Button>
             </AlertDialogFooter>
           </AlertDialogContent>

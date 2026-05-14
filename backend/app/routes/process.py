@@ -17,7 +17,6 @@ from app.db.submissions import create_kyc_submission, get_kyc_submission
 from app.schemas import (
     AttachedDocument,
     ProcessResponse,
-    RerunProcessRequest,
     attached_documents_from_stored,
 )
 from app.services.pipeline import run_pipeline
@@ -186,9 +185,26 @@ async def process_kyc(
     )
 
 
+def _dedupe_retain_object_keys(raw: list[str] | None) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in raw or []:
+        key = str(item).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    return ordered
+
+
 @router.post("/process/rerun", response_model=ProcessResponse, response_model_by_alias=True)
-async def rerun_process_kyc(body: RerunProcessRequest) -> ProcessResponse:
-    """Run the pipeline again using a saved submission's company, files, and reference URLs."""
+async def rerun_process_kyc(
+    submission_id: str = Form(..., min_length=1),
+    files: list[UploadFile] | None = File(default=None),
+    reference_urls: Annotated[list[str] | None, Form()] = None,
+    retain_object_keys: Annotated[list[str] | None, Form()] = None,
+) -> ProcessResponse:
+    """Run the pipeline again for a saved submission with edited URL list and attachments."""
     settings = get_settings()
     if not settings.gemini_api_key:
         raise HTTPException(
@@ -197,7 +213,7 @@ async def rerun_process_kyc(body: RerunProcessRequest) -> ProcessResponse:
         )
 
     try:
-        prior_id = uuid.UUID(body.submission_id.strip())
+        prior_id = uuid.UUID(submission_id.strip())
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid submission id") from None
 
@@ -221,14 +237,7 @@ async def rerun_process_kyc(body: RerunProcessRequest) -> ProcessResponse:
             detail="Stored submission has no company name",
         )
 
-    raw_refs = record.reference_urls
-    stored_url_strings: list[str] = []
-    if isinstance(raw_refs, list):
-        stored_url_strings = [
-            str(u).strip() for u in raw_refs if u is not None and str(u).strip()
-        ]
-
-    normalized_urls = normalize_reference_urls(stored_url_strings)
+    normalized_urls = normalize_reference_urls(reference_urls or [])
     ok_urls, url_err = validate_reference_urls_for_request(
         normalized_urls,
         max_count=settings.reference_url_max_per_request,
@@ -238,18 +247,25 @@ async def rerun_process_kyc(body: RerunProcessRequest) -> ProcessResponse:
     assert ok_urls is not None
 
     docs = attached_documents_from_stored(record.document_filenames)
-    uploads: list[tuple[str, bytes, str]] = []
+    doc_by_key: dict[str, AttachedDocument] = {}
+    for d in docs:
+        if d.object_key:
+            doc_by_key[d.object_key] = d
 
-    if docs:
-        missing_keys = [d for d in docs if not d.object_key]
-        if missing_keys:
+    retain_keys = _dedupe_retain_object_keys(retain_object_keys)
+    for key in retain_keys:
+        if key not in doc_by_key:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Cannot rerun: one or more saved attachments have no storage key "
-                    "(older submissions). Start a new run and upload the documents again."
+                    "Invalid retain_object_keys: key does not belong to this submission "
+                    f"({key!r})"
                 ),
             )
+
+    uploads: list[tuple[str, bytes, str]] = []
+
+    if retain_keys:
         if not settings.s3_ready():
             raise HTTPException(
                 status_code=503,
@@ -259,9 +275,8 @@ async def rerun_process_kyc(body: RerunProcessRequest) -> ProcessResponse:
                     "S3_SECRET_ACCESS_KEY (and optionally S3_REGION)."
                 ),
             )
-        for d in docs:
-            key = d.object_key
-            assert key is not None
+        for key in retain_keys:
+            d = doc_by_key[key]
             try:
                 data = await get_object_bytes(settings, key)
             except FileNotFoundError:
@@ -271,10 +286,32 @@ async def rerun_process_kyc(body: RerunProcessRequest) -> ProcessResponse:
                 ) from None
             uploads.append((d.filename, data, d.content_type or ""))
 
+    file_list = files or []
+    for idx, upload in enumerate(file_list, start=1):
+        data = await upload.read()
+        name = upload.filename or "document"
+        uploads.append((name, data, upload.content_type or ""))
+        logger.info(
+            "rerun_process_kyc: new upload %d/%d name=%r bytes=%d",
+            idx,
+            len(file_list),
+            name,
+            len(data),
+        )
+
     submission_id_uuid = uuid.uuid4()
     attached_documents: list[AttachedDocument] = []
 
     if uploads:
+        if not settings.s3_ready():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Object storage is not configured. "
+                    "Set S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY_ID, and "
+                    "S3_SECRET_ACCESS_KEY (and optionally S3_REGION)."
+                ),
+            )
         attached_documents = await upload_submission_files(
             settings,
             submission_id_uuid,

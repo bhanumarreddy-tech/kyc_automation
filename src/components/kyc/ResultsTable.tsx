@@ -46,6 +46,16 @@ import type {
 } from "@/data/kycQuestions";
 import { ExportOptions } from "@/components/kyc/ExportOptions";
 import { KYCStatsBar } from "@/components/kyc/KYCStatsBar";
+import { Switch } from "@/components/ui/switch";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
+import { classifyRowDelta, readAuditLog, type AuditLogEntry } from "@/lib/kycAnalystToolkit";
 
 type EditingField = "answer" | "sources" | "analystComments";
 
@@ -119,6 +129,17 @@ interface ResultsTableProps {
   rows: KYCRow[];
   onReset: () => void;
   onRowChange: (serialNo: number, updates: Partial<KYCRow>) => void;
+  comparisonBaseline?: KYCRow[] | null;
+  comparisonLabel?: string | null;
+  onClearComparison?: () => void;
+  submissionMeta?: { submissionId: string | null; savedAt: string | null };
+  referenceUrls?: string[];
+  attachedDocuments?: { filename: string; objectKey?: string | null }[];
+  analystName?: string;
+  onAnalystNameChange?: (name: string) => void;
+  signOff?: boolean;
+  onSignOffChange?: (value: boolean) => void;
+  onAudit?: (entry: Omit<AuditLogEntry, "at">) => void;
 }
 
 const sourcesToText = (sources: SourceLink[]): string =>
@@ -369,6 +390,17 @@ export function ResultsTable({
   rows,
   onReset,
   onRowChange,
+  comparisonBaseline = null,
+  comparisonLabel = null,
+  onClearComparison,
+  submissionMeta,
+  referenceUrls,
+  attachedDocuments,
+  analystName = "",
+  onAnalystNameChange,
+  signOff = false,
+  onSignOffChange,
+  onAudit,
 }: ResultsTableProps) {
   const [editing, setEditing] = useState<{ serialNo: number; field: EditingField } | null>(
     null
@@ -377,9 +409,28 @@ export function ResultsTable({
   const [filters, setFilters] = useState<TableFiltersState>(INITIAL_FILTERS);
   const [sortColumn, setSortColumn] = useState<SortColumnId | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [showChangedOnly, setShowChangedOnly] = useState(false);
+  const [validationPeekRow, setValidationPeekRow] = useState<KYCRow | null>(null);
+  const [auditOpen, setAuditOpen] = useState(false);
+
+  const baselineBySerial = useMemo(() => {
+    if (!comparisonBaseline?.length) return null;
+    return new Map(comparisonBaseline.map((r) => [r.serialNo, r]));
+  }, [comparisonBaseline]);
+
+  const getRowHighlightClass = (row: KYCRow) => {
+    if (!baselineBySerial) return "";
+    const d = classifyRowDelta(row, baselineBySerial.get(row.serialNo));
+    return d.changed ? "bg-amber-500/10 dark:bg-amber-500/15" : "";
+  };
 
   const filteredSortedGrouped = useMemo(() => {
-    const filtered = rows.filter((row) => rowPassesFilters(row, filters));
+    let filtered = rows.filter((row) => rowPassesFilters(row, filters));
+    if (showChangedOnly && baselineBySerial) {
+      filtered = filtered.filter((row) =>
+        classifyRowDelta(row, baselineBySerial.get(row.serialNo)).changed
+      );
+    }
     let sorted: KYCRow[];
     if (!sortColumn) {
       sorted = [...filtered].sort((a, b) => a.serialNo - b.serialNo);
@@ -392,12 +443,17 @@ export function ResultsTable({
       });
     }
     return regroupConsecutive(sorted);
-  }, [rows, filters, sortColumn, sortDir]);
+  }, [rows, filters, sortColumn, sortDir, showChangedOnly, baselineBySerial]);
 
-  const filteredCount = useMemo(
-    () => rows.filter((row) => rowPassesFilters(row, filters)).length,
-    [rows, filters]
-  );
+  const filteredCount = useMemo(() => {
+    let filtered = rows.filter((row) => rowPassesFilters(row, filters));
+    if (showChangedOnly && baselineBySerial) {
+      filtered = filtered.filter((row) =>
+        classifyRowDelta(row, baselineBySerial.get(row.serialNo)).changed
+      );
+    }
+    return filtered.length;
+  }, [rows, filters, showChangedOnly, baselineBySerial]);
 
   const cycleSort = (col: SortColumnId) => {
     if (sortColumn !== col) {
@@ -540,15 +596,17 @@ export function ResultsTable({
   };
 
   const renderValidationSourcesCell = (row: KYCRow) => {
-    if (row.validation !== "Yes") {
-      return <span className="text-muted-foreground text-xs">—</span>;
-    }
-    return (
-      <div className="space-y-1">
-        {row.validationSources.length === 0 ? (
-          <span className="text-muted-foreground text-xs">No document source</span>
-        ) : (
-          row.validationSources.map((src, idx) => (
+    const delta = baselineBySerial
+      ? classifyRowDelta(row, baselineBySerial.get(row.serialNo))
+      : null;
+    const body =
+      row.validation !== "Yes" ? (
+        <span className="text-muted-foreground text-xs">—</span>
+      ) : row.validationSources.length === 0 ? (
+        <span className="text-muted-foreground text-xs">No document source</span>
+      ) : (
+        <div className="space-y-1">
+          {row.validationSources.map((src, idx) => (
             <div key={idx} className="text-xs">
               <span className="font-medium">{src.document}</span>
               {src.url?.trim() && (
@@ -567,13 +625,32 @@ export function ResultsTable({
                 <span className="text-muted-foreground"> (p.{src.page})</span>
               )}
               {src.excerpt && (
-                <div className="text-muted-foreground italic mt-0.5">
+                <div className="text-muted-foreground italic mt-0.5 line-clamp-2">
                   &ldquo;{src.excerpt}&rdquo;
                 </div>
               )}
             </div>
-          ))
+          ))}
+        </div>
+      );
+
+    return (
+      <div className="space-y-1.5">
+        {delta?.changed && (
+          <div className="text-[10px] uppercase tracking-wide text-amber-800 dark:text-amber-300 font-medium">
+            Δ {delta.tags.join(" · ")}
+          </div>
         )}
+        {body}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs w-full max-w-[140px]"
+          onClick={() => setValidationPeekRow(row)}
+        >
+          Source peek
+        </Button>
       </div>
     );
   };
@@ -643,9 +720,91 @@ export function ResultsTable({
 
   const anyFilterActive = filtersAreActive(filters);
 
+  const exportAuditLogJson = () => {
+    const data = readAuditLog();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `kyc_audit_log_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-4">
       <KYCStatsBar rows={rows} />
+
+      <div className="rounded-md border bg-muted/30 p-3 flex flex-wrap gap-4 items-end text-sm">
+        {onAnalystNameChange && (
+          <div className="space-y-1 min-w-[200px] flex-1">
+            <Label htmlFor="analyst-id">Analyst identity (local only)</Label>
+            <Input
+              id="analyst-id"
+              value={analystName}
+              onChange={(e) => onAnalystNameChange(e.target.value)}
+              placeholder="Name or initials"
+              className="h-9"
+            />
+          </div>
+        )}
+        {submissionMeta?.submissionId && (
+          <div className="space-y-1 text-xs text-muted-foreground min-w-[220px] max-w-md">
+            <div className="font-medium text-foreground">Run provenance</div>
+            <div className="font-mono break-all">ID: {submissionMeta.submissionId}</div>
+            {submissionMeta.savedAt && (
+              <div>Saved: {new Date(submissionMeta.savedAt).toLocaleString()}</div>
+            )}
+          </div>
+        )}
+        {submissionMeta?.submissionId && onSignOffChange && (
+          <div className="flex items-center space-x-2 pb-1">
+            <Checkbox
+              id="analyst-signoff"
+              checked={signOff}
+              onCheckedChange={(c) => {
+                const next = c === true;
+                onSignOffChange(next);
+                onAudit?.({
+                  action: next ? "sign_off" : "sign_off_revoked",
+                  analyst: analystName?.trim() || undefined,
+                  detail: { submissionId: submissionMeta.submissionId },
+                });
+              }}
+            />
+            <Label htmlFor="analyst-signoff" className="text-sm font-normal cursor-pointer">
+              Sign-off (this browser)
+            </Label>
+          </div>
+        )}
+        <Button type="button" variant="outline" size="sm" onClick={() => setAuditOpen(true)}>
+          Local audit log
+        </Button>
+      </div>
+
+      {baselineBySerial && (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-200 dark:border-amber-900 bg-amber-50/40 dark:bg-amber-950/20 px-3 py-2 text-sm">
+          <span className="text-muted-foreground">
+            Regression vs{" "}
+            <span className="font-medium text-foreground">{comparisonLabel ?? "prior run"}</span>
+          </span>
+          <div className="flex items-center gap-2">
+            <Switch
+              id="changed-only"
+              checked={showChangedOnly}
+              onCheckedChange={(c) => setShowChangedOnly(c === true)}
+            />
+            <Label htmlFor="changed-only" className="text-sm font-normal cursor-pointer">
+              Changed rows only
+            </Label>
+          </div>
+          {onClearComparison && (
+            <Button type="button" variant="ghost" size="sm" onClick={onClearComparison}>
+              Clear comparison
+            </Button>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center justify-between">
         <div>
@@ -660,7 +819,16 @@ export function ResultsTable({
           </p>
         </div>
         <div className="flex gap-2">
-          <ExportOptions companyName={companyName} rows={rows} />
+          <ExportOptions
+            companyName={companyName}
+            rows={rows}
+            submissionId={submissionMeta?.submissionId}
+            savedAt={submissionMeta?.savedAt}
+            referenceUrls={referenceUrls}
+            attachedDocuments={attachedDocuments}
+            analystName={analystName}
+            onAudit={onAudit}
+          />
           <Button variant="outline" onClick={onReset}>
             <RotateCcw className="h-4 w-4 mr-2" />
             Start New
@@ -912,6 +1080,7 @@ export function ResultsTable({
                   sectionNo={section.sectionNo}
                   sectionName={section.sectionName}
                   rows={section.rows}
+                  getRowClassName={getRowHighlightClass}
                   renderAnswerCell={renderAnswerCell}
                   renderSourcesCell={renderSourcesCell}
                   renderValidationCell={renderValidationCell}
@@ -924,6 +1093,106 @@ export function ResultsTable({
           </Table>
         </div>
       </div>
+
+      <Dialog open={validationPeekRow !== null} onOpenChange={(o) => !o && setValidationPeekRow(null)}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Validation sources — Q{validationPeekRow?.serialNo ?? ""}</DialogTitle>
+          </DialogHeader>
+          {validationPeekRow && (
+            <div className="space-y-4 text-sm">
+              {baselineBySerial && (
+                <div className="rounded-md bg-muted/50 p-2 text-xs space-y-1">
+                  <div className="font-medium text-foreground">vs prior run</div>
+                  <div>
+                    Prior answer:{" "}
+                    <span className="text-muted-foreground whitespace-pre-wrap">
+                      {baselineBySerial.get(validationPeekRow.serialNo)?.answer?.trim() ||
+                        "—"}
+                    </span>
+                  </div>
+                  <div>
+                    Prior validation:{" "}
+                    {baselineBySerial.get(validationPeekRow.serialNo)?.validation || "—"}
+                  </div>
+                </div>
+              )}
+              <p className="text-muted-foreground text-xs">{validationPeekRow.question}</p>
+              {validationPeekRow.validationSources.length === 0 ? (
+                <p className="text-muted-foreground">No structured sources for this row.</p>
+              ) : (
+                <ul className="space-y-4">
+                  {validationPeekRow.validationSources.map((src, idx) => (
+                    <li key={idx} className="border rounded-md p-3 space-y-2">
+                      <div className="font-medium">{src.document}</div>
+                      {typeof src.page === "number" && (
+                        <div className="text-xs text-muted-foreground">Page {src.page}</div>
+                      )}
+                      {src.url?.trim() && (
+                        <a
+                          href={src.url.trim()}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary text-xs underline break-all inline-flex items-center gap-1"
+                        >
+                          Open link <ExternalLink className="h-3 w-3 shrink-0" />
+                        </a>
+                      )}
+                      {src.excerpt && (
+                        <blockquote className="text-xs border-l-2 pl-2 italic text-muted-foreground whitespace-pre-wrap">
+                          {src.excerpt}
+                        </blockquote>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setValidationPeekRow(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={auditOpen} onOpenChange={setAuditOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Local audit log (browser only)</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            Entries cover exports, sign-offs, and reruns while using this browser. This is not a
+            server-side compliance ledger.
+          </p>
+          <div className="overflow-y-auto text-xs font-mono space-y-1 flex-1 min-h-[200px] border rounded-md p-2 bg-muted/30">
+            {readAuditLog()
+              .slice()
+              .reverse()
+              .map((e, i) => (
+                <div key={i} className="border-b border-border/50 pb-1 mb-1 break-words">
+                  <span className="text-muted-foreground">{e.at}</span>{" "}
+                  <span className="text-foreground">{e.action}</span>
+                  {e.analyst && <span className="text-primary"> · {e.analyst}</span>}
+                  {e.detail && (
+                    <pre className="mt-0.5 text-[10px] whitespace-pre-wrap">
+                      {JSON.stringify(e.detail)}
+                    </pre>
+                  )}
+                </div>
+              ))}
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="outline" onClick={exportAuditLogJson}>
+              Export log JSON
+            </Button>
+            <Button type="button" onClick={() => setAuditOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -932,6 +1201,7 @@ interface SectionRowsProps {
   sectionNo: number;
   sectionName: string;
   rows: KYCRow[];
+  getRowClassName?: (row: KYCRow) => string;
   renderAnswerCell: (row: KYCRow) => ReactNode;
   renderSourcesCell: (row: KYCRow) => ReactNode;
   renderValidationCell: (row: KYCRow) => ReactNode;
@@ -944,6 +1214,7 @@ function SectionRows({
   sectionNo,
   sectionName,
   rows,
+  getRowClassName,
   renderAnswerCell,
   renderSourcesCell,
   renderValidationCell,
@@ -959,7 +1230,10 @@ function SectionRows({
         </TableCell>
       </TableRow>
       {rows.map((row) => (
-        <TableRow key={row.serialNo} className="align-top">
+        <TableRow
+          key={row.serialNo}
+          className={`align-top ${getRowClassName?.(row) ?? ""}`.trim()}
+        >
           <TableCell className="text-sm font-medium align-top">{row.sectionNo}</TableCell>
           <TableCell className="text-sm font-medium align-top">{row.serialNo}</TableCell>
           <TableCell className="text-sm align-top">{row.question}</TableCell>

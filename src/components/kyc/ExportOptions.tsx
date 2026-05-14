@@ -6,13 +6,21 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Download, FileSpreadsheet, FileText } from "lucide-react";
+import { Download, FileSpreadsheet, FileText, FileJson, Archive } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { KYCRow } from "@/data/kycQuestions";
+import { apiUrl } from "@/lib/api";
+import type { AuditLogEntry } from "@/lib/kycAnalystToolkit";
 
 interface ExportOptionsProps {
   companyName: string;
   rows: KYCRow[];
+  submissionId?: string | null;
+  savedAt?: string | null;
+  referenceUrls?: string[];
+  attachedDocuments?: { filename: string; objectKey?: string | null }[];
+  analystName?: string;
+  onAudit?: (entry: Omit<AuditLogEntry, "at">) => void;
 }
 
 const HEADERS = [
@@ -57,7 +65,16 @@ const rowToColumns = (row: KYCRow): string[] => [
   row.analystComments,
 ];
 
-export function ExportOptions({ companyName, rows }: ExportOptionsProps) {
+export function ExportOptions({
+  companyName,
+  rows,
+  submissionId,
+  savedAt,
+  referenceUrls,
+  attachedDocuments,
+  analystName,
+  onAudit,
+}: ExportOptionsProps) {
   const { toast } = useToast();
   const [isExporting, setIsExporting] = useState(false);
 
@@ -71,6 +88,80 @@ export function ExportOptions({ companyName, rows }: ExportOptionsProps) {
     window.URL.revokeObjectURL(url);
   };
 
+  const exportDraftSnapshot = () => {
+    const bundle = {
+      kind: "kyc_automation_draft_v1",
+      exportedAt: new Date().toISOString(),
+      companyName: companyName.trim(),
+      analystName: analystName?.trim() || undefined,
+      submissionId: submissionId ?? undefined,
+      rows,
+    };
+    downloadFile(
+      JSON.stringify(bundle, null, 2),
+      `${companyName || "KYC"}_draft_snapshot.json`,
+      "application/json",
+    );
+    toast({ title: "Draft saved", description: "JSON snapshot downloaded to your device." });
+    onAudit?.({
+      action: "export_draft_snapshot",
+      analyst: analystName?.trim() || undefined,
+      detail: { rowCount: rows.length, submissionId },
+    });
+  };
+
+  const exportEvidenceBundle = () => {
+    const sid = submissionId?.trim();
+    const attachments =
+      attachedDocuments?.map((d) => ({
+        filename: d.filename,
+        objectKey: d.objectKey ?? null,
+        downloadUrl:
+          sid && d.objectKey
+            ? apiUrl(
+                `/api/history/${encodeURIComponent(sid)}/attachments/download?objectKey=${encodeURIComponent(d.objectKey)}`,
+              )
+            : null,
+      })) ?? [];
+
+    const bundle = {
+      kind: "kyc_automation_evidence_bundle_v1",
+      generatedAt: new Date().toISOString(),
+      companyName: companyName.trim(),
+      analystName: analystName?.trim() || undefined,
+      submissionId: sid || undefined,
+      savedAt: savedAt ?? undefined,
+      referenceUrls: referenceUrls ?? [],
+      attachments,
+      questionnaire: rows.map((row) => ({
+        sectionNo: row.sectionNo,
+        sectionName: row.sectionName,
+        serialNo: row.serialNo,
+        question: row.question,
+        answer: row.answer,
+        sources: row.sources,
+        validation: row.validation,
+        validationSources: row.validationSources,
+        kycAgentRecon: row.kycAgentRecon,
+        analystComments: row.analystComments,
+      })),
+    };
+    downloadFile(
+      JSON.stringify(bundle, null, 2),
+      `${companyName || "KYC"}_evidence_bundle.json`,
+      "application/json",
+    );
+    toast({
+      title: "Evidence bundle exported",
+      description: "Includes questionnaire, citations metadata, and attachment download URLs.",
+    });
+    onAudit?.({
+      action: "export_evidence_bundle",
+      analyst: analystName?.trim() || undefined,
+      detail: { submissionId: sid, attachmentCount: attachments.length },
+    });
+  };
+
   const exportCSV = () => {
     const lines = [HEADERS.join(",")];
     for (const row of rows) {
@@ -82,6 +173,11 @@ export function ExportOptions({ companyName, rows }: ExportOptionsProps) {
       "text/csv"
     );
     toast({ title: "Export complete", description: "CSV file downloaded" });
+    onAudit?.({
+      action: "export_csv",
+      analyst: analystName?.trim() || undefined,
+      detail: { rowCount: rows.length },
+    });
   };
 
   const exportPDF = async () => {
@@ -102,6 +198,11 @@ export function ExportOptions({ companyName, rows }: ExportOptionsProps) {
         printWindow.print();
       };
       toast({ title: "PDF ready", description: "Use the print dialog to save as PDF" });
+      onAudit?.({
+        action: "export_pdf",
+        analyst: analystName?.trim() || undefined,
+        detail: { rowCount: rows.length },
+      });
     } finally {
       setIsExporting(false);
     }
@@ -116,6 +217,14 @@ export function ExportOptions({ companyName, rows }: ExportOptionsProps) {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
+        <DropdownMenuItem onClick={exportDraftSnapshot}>
+          <FileJson className="h-4 w-4 mr-2" />
+          Save draft snapshot (JSON)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={exportEvidenceBundle}>
+          <Archive className="h-4 w-4 mr-2" />
+          Evidence bundle (JSON)
+        </DropdownMenuItem>
         <DropdownMenuItem onClick={exportCSV}>
           <FileSpreadsheet className="h-4 w-4 mr-2" />
           Export as CSV

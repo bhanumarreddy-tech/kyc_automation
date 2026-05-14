@@ -61,12 +61,6 @@ class AttachedDocument(BaseModel):
     object_key: str | None = Field(default=None, alias="objectKey")
 
 
-class RerunProcessRequest(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    submission_id: str = Field(alias="submissionId", min_length=1)
-
-
 class ProcessResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
