@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -270,6 +270,12 @@ export default function KYCAutomation() {
   const [pipelineSectionErrors, setPipelineSectionErrors] = useState<
     { sectionNo: number; phase: string; message: string; errorId: string }[]
   >([]);
+  const [pipelineIntelligence, setPipelineIntelligence] = useState<
+    Record<string, unknown> | null
+  >(null);
+  const [searchParams] = useSearchParams();
+  const intakeTokenFromUrl = searchParams.get("intakeToken");
+
   const [serverEscalatedSerials, setServerEscalatedSerials] = useState<number[]>([]);
 
   useEffect(() => {
@@ -433,12 +439,16 @@ export default function KYCAutomation() {
       attachedDocuments?: AttachedDocumentItem[];
       referenceUrls?: string[];
       pipelineErrors?: { sectionNo: number; phase: string; message: string; errorId: string }[];
+      intelligence?: Record<string, unknown> | null;
     },
     companyLabel: string,
   ) => {
     const hydrated = hydrateKycRows(data.rows);
     setRows(hydrated);
     setPipelineSectionErrors(data.pipelineErrors ?? []);
+    setPipelineIntelligence(
+      data.intelligence && typeof data.intelligence === "object" ? data.intelligence : null,
+    );
     setStep("results");
 
     const answeredN = hydrated.filter((r) => {
@@ -539,6 +549,7 @@ export default function KYCAutomation() {
           attachedDocuments: data.attachedDocuments,
           referenceUrls: data.referenceUrls,
           pipelineErrors: data.pipelineErrors,
+          intelligence: data.intelligence,
         },
         companyLabel.trim(),
       );
@@ -607,6 +618,9 @@ export default function KYCAutomation() {
     for (const f of edit.newFiles) {
       formData.append("files", f, f.name);
     }
+    if (intakeTokenFromUrl?.trim()) {
+      formData.append("intake_token", intakeTokenFromUrl.trim());
+    }
     void runRerunWithFormData(edit.companyLabel, formData, {
       files: edit.retainedObjectKeys.length + edit.newFiles.length,
       urls: refUrls.length,
@@ -621,6 +635,7 @@ export default function KYCAutomation() {
     setRows([]);
     setCompanyName("");
     setLastRunMeta(null);
+    setPipelineIntelligence(null);
   };
 
   const openHistorySubmission = async (submissionId: string) => {
@@ -647,12 +662,18 @@ export default function KYCAutomation() {
         attachedDocuments?: AttachedDocumentItem[];
         durationMs?: number | null;
         referenceUrls?: string[];
+        pipelineIntelligence?: Record<string, unknown> | null;
       };
       if (!data?.rows || !Array.isArray(data.rows)) {
         throw new Error("Invalid submission payload");
       }
       setCompanyName(data.companyName);
       setRows(hydrateKycRows(data.rows));
+      setPipelineIntelligence(
+        data.pipelineIntelligence && typeof data.pipelineIntelligence === "object"
+          ? data.pipelineIntelligence
+          : null,
+      );
       setHistoryDetailCreatedAt(data.createdAt ?? null);
       setHistoryRunMeta({
         attachedDocuments: Array.isArray(data.attachedDocuments)
@@ -734,6 +755,9 @@ export default function KYCAutomation() {
       for (const u of refUrls) {
         formData.append("reference_urls", u);
       }
+      if (intakeTokenFromUrl?.trim()) {
+        formData.append("intake_token", intakeTokenFromUrl.trim());
+      }
 
       const jobId = await startProcessJob(formData);
       setActiveJobId(jobId);
@@ -752,6 +776,7 @@ export default function KYCAutomation() {
           attachedDocuments: data.attachedDocuments,
           referenceUrls: data.referenceUrls,
           pipelineErrors: data.pipelineErrors,
+          intelligence: data.intelligence,
         },
         companyName.trim(),
       );
@@ -791,6 +816,7 @@ export default function KYCAutomation() {
     setRerunInFlight(false);
     setRerunEdit(null);
     setPipelineSectionErrors([]);
+    setPipelineIntelligence(null);
     setJobProgress(null);
     setActiveJobId(null);
     setServerEscalatedSerials([]);
@@ -888,6 +914,15 @@ export default function KYCAutomation() {
           <TabsContent value="run" className="mt-6 space-y-6">
             {step === "upload" && (
           <div className="max-w-2xl mx-auto space-y-6">
+            {intakeTokenFromUrl?.trim() ? (
+              <Alert>
+                <AlertTitle>Client intake link</AlertTitle>
+                <AlertDescription>
+                  This session uses a gated intake token. Submissions here are validated server-side against
+                  the token you opened.
+                </AlertDescription>
+              </Alert>
+            ) : null}
             <div className="bg-card p-6 rounded-lg border shadow-sm space-y-6">
               <div className="space-y-2">
                 <Label htmlFor="companyName">Client Name</Label>
@@ -1305,6 +1340,7 @@ export default function KYCAutomation() {
               }}
               onAudit={recordAudit}
               initialEscalatedSerials={serverEscalatedSerials}
+              pipelineIntelligence={pipelineIntelligence}
             />
           </div>
             )}
@@ -1439,6 +1475,7 @@ export default function KYCAutomation() {
                   }}
                   onAudit={recordAudit}
                   initialEscalatedSerials={serverEscalatedSerials}
+                  pipelineIntelligence={pipelineIntelligence}
                 />
               </>
             )}

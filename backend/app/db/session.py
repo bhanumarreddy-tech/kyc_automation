@@ -5,6 +5,7 @@ from __future__ import annotations
 import ssl
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -72,6 +73,38 @@ def db_session_maker() -> async_sessionmaker[AsyncSession] | None:
     return _async_session_maker
 
 
+async def _ensure_postgres_addon_columns(conn) -> None:
+    """Add columns/tables introduced after first deploy (``create_all`` does not alter tables)."""
+
+    if conn.engine.dialect.name != "postgresql":
+        return
+
+    # New JSONB column on existing table — without this, SELECTs from the ORM return 500 (undefined_column).
+    await conn.execute(
+        text(
+            "ALTER TABLE kyc_submissions "
+            "ADD COLUMN IF NOT EXISTS pipeline_intelligence JSONB"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE kyc_submission_metadata "
+            "ADD COLUMN IF NOT EXISTS workflow_state JSONB NOT NULL DEFAULT '{}'::jsonb"
+        )
+    )
+    await conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS kyc_intake_tokens (
+                token VARCHAR(96) NOT NULL PRIMARY KEY,
+                label VARCHAR(512) NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+    )
+
+
 async def init_database() -> None:
     """Create engine, session factory, and tables when ``DATABASE_URL`` is set."""
     global _engine, _async_session_maker
@@ -90,6 +123,7 @@ async def init_database() -> None:
     )
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _ensure_postgres_addon_columns(conn)
 
 
 async def dispose_database() -> None:

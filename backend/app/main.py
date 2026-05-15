@@ -22,6 +22,8 @@ from app.config import get_settings
 from app.db.session import dispose_database, init_database
 from app.middleware.request_logging import RequestLoggingMiddleware
 from app.routes import history as history_route
+from app.routes import intake as intake_route
+from app.routes import narrative as narrative_route
 from app.routes import process as process_route
 
 settings = get_settings()
@@ -96,3 +98,5 @@ async def healthcheck() -> dict[str, str]:
 
 app.include_router(process_route.router)
 app.include_router(history_route.router)
+app.include_router(intake_route.router)
+app.include_router(narrative_route.router)

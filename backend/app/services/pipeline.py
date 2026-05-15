@@ -25,6 +25,8 @@ from app.questions import KYC_QUESTIONS, KYCQuestion, group_by_section
 from app.schemas import KYCRow, SourceLink, ValidationSource
 from app.services.answer_section import AnsweredQuestion, answer_section
 from app.services.documents import parse_documents
+from app.services.kyc_intelligence import build_pipeline_intelligence
+from app.services.kyc_row_signals import annotate_pipeline_rows
 from app.services.reference_urls import ingest_reference_urls
 from app.services.sec_filings_hub import format_issuer_edgar_search_hint, resolve_sec_filings_hub
 from app.services.source_urls import (
@@ -46,6 +48,7 @@ class PipelineCancelled(Exception):
 class RunPipelineOutcome:
     rows: list[KYCRow]
     section_errors: list[dict[str, Any]] = field(default_factory=list)
+    intelligence: dict[str, Any] | None = None
 
 
 async def _emit(
@@ -384,10 +387,21 @@ async def run_pipeline(
             )
         )
 
+    intelligence: dict[str, Any] | None = None
+    try:
+        rows = annotate_pipeline_rows(rows)
+        intelligence = await build_pipeline_intelligence(company, rows, parsed_docs)
+    except Exception:  # noqa: BLE001 - never fail the pipeline on addons
+        logger.exception("pipeline intelligence / row signals skipped")
+
     logger.info(
         "Pipeline finished for company=%r: %d questionnaire rows, %d section error(s)",
         company,
         len(rows),
         len(section_errors),
     )
-    return RunPipelineOutcome(rows=rows, section_errors=section_errors)
+    return RunPipelineOutcome(
+        rows=rows,
+        section_errors=section_errors,
+        intelligence=intelligence,
+    )

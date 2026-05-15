@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
@@ -14,6 +15,7 @@ from app.db.submissions import (
     get_kyc_submission,
     get_submission_metadata_row,
     list_kyc_submissions,
+    similar_company_matches,
     upsert_submission_metadata,
 )
 from app.schemas import (
@@ -92,6 +94,8 @@ async def get_history_detail(submission_id: str) -> HistoryDetailResponse:
     ref_urls: list[str] = []
     if isinstance(raw_refs, list):
         ref_urls = [str(u).strip() for u in raw_refs if u is not None and str(u).strip()]
+    intel = getattr(record, "pipeline_intelligence", None)
+    pipeline_intel = intel if isinstance(intel, dict) else None
     return HistoryDetailResponse(
         submission_id=str(record.id),
         company_name=record.company_name,
@@ -100,6 +104,7 @@ async def get_history_detail(submission_id: str) -> HistoryDetailResponse:
         duration_ms=record.duration_ms,
         reference_urls=ref_urls,
         rows=rows,
+        pipeline_intelligence=pipeline_intel,
     )
 
 
@@ -159,6 +164,7 @@ def _meta_to_response(submission_id: str, row) -> SubmissionMetadataResponse:
         analyst_notes=str(row.analyst_notes or ""),
         audit_log=list(row.audit_log or []),
         escalated_serials=[int(x) for x in (row.escalated_serials or []) if str(x).isdigit()],
+        workflow_state=dict(row.workflow_state or {}),
     )
 
 
@@ -189,6 +195,7 @@ async def get_submission_metadata(submission_id: str) -> SubmissionMetadataRespo
                 analyst_notes="",
                 audit_log=[],
                 escalated_serials=[],
+                workflow_state={},
             )
         return _meta_to_response(submission_id, meta)
 
@@ -221,6 +228,7 @@ async def put_submission_metadata(
             sign_off=body.sign_off,
             analyst_notes=body.analyst_notes,
             escalated_serials=body.escalated_serials,
+            workflow_state=body.workflow_state,
         )
         await session.commit()
         await session.refresh(row)
@@ -262,3 +270,76 @@ async def post_submission_audit(
         await session.commit()
         await session.refresh(row)
     return _meta_to_response(submission_id, row)
+
+
+@router.get("/entity-resolution/similar")
+async def entity_resolution_similar(
+    company_name: str = Query(..., min_length=2, alias="companyName"),
+    exclude_submission_id: str | None = Query(default=None, alias="excludeSubmissionId"),
+    limit: int = Query(default=12, ge=1, le=50),
+) -> list[dict[str, object]]:
+    """Cheap fuzzy match over recent submissions (SequenceMatcher on company name)."""
+
+    maker = db_session_maker()
+    if maker is None:
+        return []
+
+    ex_uid: UUID | None = None
+    if exclude_submission_id and exclude_submission_id.strip():
+        try:
+            ex_uid = UUID(exclude_submission_id.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid excludeSubmissionId") from None
+
+    async with maker() as session:
+        return await similar_company_matches(
+            session,
+            company_name.strip(),
+            exclude_submission_id=ex_uid,
+            result_limit=limit,
+        )
+
+
+@router.get("/history/{submission_id}/qa-sample")
+async def qa_sample_serials(
+    submission_id: str,
+    n: int = Query(default=5, ge=1, le=40),
+) -> dict[str, object]:
+    """Random serial numbers for rows where AI validation is not ``Yes`` (QA spot-checks)."""
+
+    try:
+        uid = UUID(submission_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid submission id") from None
+
+    maker = db_session_maker()
+    if maker is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+
+    async with maker() as session:
+        record = await get_kyc_submission(session, uid)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    rows_json = record.rows if isinstance(record.rows, list) else []
+    candidates: list[int] = []
+    for item in rows_json:
+        if not isinstance(item, dict):
+            continue
+        v = str(item.get("validation", "") or "").strip()
+        if v == "Yes":
+            continue
+        raw_sn = item.get("serialNo", item.get("serial_no", 0))
+        try:
+            sn = int(raw_sn)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= sn <= 512:
+            candidates.append(sn)
+
+    if not candidates:
+        return {"serials": [], "poolSize": 0}
+    k = min(n, len(candidates))
+    sampled = random.sample(candidates, k=k)
+    sampled.sort()
+    return {"serials": sampled, "poolSize": len(set(candidates))}

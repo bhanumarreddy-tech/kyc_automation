@@ -33,6 +33,9 @@ export interface KYCRow {
   validationSources: ValidationSource[];
   analystComments: string;
   kycAgentRecon: KycAgentReconValue | "";
+  /** Heuristic triage score 0–100 from the pipeline (optional on older saves). */
+  confidenceScore?: number | null;
+  stalenessDays?: number | null;
 }
 
 /** Canonicalize rows from API (field may arrive as ``KYC_Agent_Recon``). */

@@ -14,7 +14,11 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.config import get_settings
 from app.db.session import db_session_maker
-from app.db.submissions import create_kyc_submission, get_kyc_submission
+from app.db.submissions import (
+    create_kyc_submission,
+    get_intake_token,
+    get_kyc_submission,
+)
 from app.schemas import (
     AttachedDocument,
     PipelineSectionError,
@@ -51,11 +55,34 @@ def _errors_from_raw(section_errors: list[dict[str, Any]]) -> list[PipelineSecti
     ]
 
 
+async def _reject_invalid_intake_token(
+    maker,
+    intake_token: str | None,
+) -> None:
+    """When present, require Postgres and a matching row in ``kyc_intake_tokens``."""
+
+    if intake_token is None or not str(intake_token).strip():
+        return
+    if maker is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Database is required to validate intake tokens. "
+                "Configure Postgres / DATABASE_PASSWORD."
+            ),
+        )
+    async with maker() as db_session:
+        row = await get_intake_token(db_session, str(intake_token).strip())
+    if row is None:
+        raise HTTPException(status_code=400, detail="Invalid or unknown intake_token")
+
+
 @router.post("/process", response_model=ProcessResponse, response_model_by_alias=True)
 async def process_kyc(
     company_name: str = Form(..., min_length=1),
     files: list[UploadFile] | None = File(default=None),
     reference_urls: Annotated[list[str] | None, Form()] = None,
+    intake_token: Annotated[str | None, Form()] = None,
 ) -> ProcessResponse:
     t0 = time.perf_counter()
 
@@ -131,6 +158,8 @@ async def process_kyc(
     submission_id_uuid = uuid.uuid4()
     attached_documents: list[AttachedDocument] = []
 
+    await _reject_invalid_intake_token(maker, intake_token)
+
     if uploads:
         if not settings.s3_ready():
             raise HTTPException(
@@ -187,6 +216,7 @@ async def process_kyc(
                 attached_documents=attached_documents,
                 duration_ms=duration_ms,
                 reference_urls=ok_urls,
+                pipeline_intelligence=outcome.intelligence,
             )
             await db_session.commit()
             submission_id_out = str(record.id)
@@ -205,6 +235,7 @@ async def process_kyc(
         attached_documents=attached_documents,
         reference_urls=list(ok_urls),
         pipeline_errors=pipe_err,
+        intelligence=outcome.intelligence,
     )
 
 
@@ -358,6 +389,7 @@ async def rerun_process_kyc(
             attached_documents=attached_documents,
             duration_ms=duration_ms,
             reference_urls=ok_urls,
+            pipeline_intelligence=outcome.intelligence,
         )
         await db_session.commit()
         submission_id_out = str(rec.id)
@@ -371,6 +403,7 @@ async def rerun_process_kyc(
         attached_documents=attached_documents,
         reference_urls=list(ok_urls),
         pipeline_errors=pipe_err,
+        intelligence=outcome.intelligence,
     )
 
 
@@ -379,6 +412,7 @@ async def process_kyc_async(
     company_name: str = Form(..., min_length=1),
     files: list[UploadFile] | None = File(default=None),
     reference_urls: Annotated[list[str] | None, Form()] = None,
+    intake_token: Annotated[str | None, Form()] = None,
 ) -> dict[str, str]:
     """Start processing in the background; poll ``GET /api/process/jobs/{jobId}``."""
     settings = get_settings()
@@ -401,6 +435,9 @@ async def process_kyc_async(
         raise HTTPException(status_code=400, detail=url_err)
     assert ok_urls is not None
 
+    maker = db_session_maker()
+    await _reject_invalid_intake_token(maker, intake_token)
+
     file_list = files or []
     uploads: list[tuple[str, bytes, str]] = []
     for upload in file_list:
@@ -408,7 +445,6 @@ async def process_kyc_async(
         name = upload.filename or "document"
         uploads.append((name, data, upload.content_type or ""))
 
-    maker = db_session_maker()
     submission_id_uuid = uuid.uuid4()
     attached_documents: list[AttachedDocument] = []
 
@@ -472,6 +508,7 @@ async def process_kyc_async(
                         attached_documents=attached_documents,
                         duration_ms=duration_ms,
                         reference_urls=ok_urls,
+                        pipeline_intelligence=outcome.intelligence,
                     )
                     await db_session.commit()
                     submission_id_out = str(record.id)
@@ -484,6 +521,7 @@ async def process_kyc_async(
                 attached_documents=attached_documents,
                 reference_urls=list(ok_urls),
                 pipeline_errors=pipe_err,
+                intelligence=outcome.intelligence,
             )
             st.result_payload = resp.model_dump(mode="json", by_alias=True)
             st.status = "completed"
@@ -640,6 +678,7 @@ async def rerun_process_kyc_async(
                     attached_documents=attached_documents,
                     duration_ms=duration_ms,
                     reference_urls=ok_urls,
+                    pipeline_intelligence=outcome.intelligence,
                 )
                 await db_session.commit()
                 submission_id_out = str(rec.id)
@@ -652,6 +691,7 @@ async def rerun_process_kyc_async(
                 attached_documents=attached_documents,
                 reference_urls=list(ok_urls),
                 pipeline_errors=pipe_err,
+                intelligence=outcome.intelligence,
             )
             st.result_payload = resp.model_dump(mode="json", by_alias=True)
             st.status = "completed"

@@ -26,6 +26,7 @@ export type ProcessJobResult = {
   }[];
   referenceUrls?: string[];
   pipelineErrors?: { sectionNo: number; phase: string; message: string; errorId: string }[];
+  intelligence?: Record<string, unknown> | null;
 };
 
 function parseJobSnapshot(raw: Record<string, unknown>): JobSnapshot {
@@ -80,6 +81,7 @@ export async function subscribeProcessJob(
         attachedDocuments?: ProcessJobResult["attachedDocuments"];
         referenceUrls?: string[];
         pipelineErrors?: ProcessJobResult["pipelineErrors"];
+        intelligence?: ProcessJobResult["intelligence"];
       };
       if (!r.rows || !Array.isArray(r.rows)) {
         throw new Error("Invalid job result: missing rows");
@@ -92,6 +94,7 @@ export async function subscribeProcessJob(
         attachedDocuments: r.attachedDocuments,
         referenceUrls: r.referenceUrls,
         pipelineErrors: r.pipelineErrors,
+        intelligence: r.intelligence ?? null,
       };
     }
     if (j?.status === "failed") {

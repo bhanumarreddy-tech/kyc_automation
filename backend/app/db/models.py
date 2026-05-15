@@ -36,6 +36,11 @@ class KYCSubmissionMetadata(Base):
         nullable=False,
         default=list,
     )
+    workflow_state: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -66,3 +71,18 @@ class KYCSubmission(Base):
     # User-supplied reference URLs (http(s)), same order as submitted.
     reference_urls: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    pipeline_intelligence: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class KYCIntakeToken(Base):
+    """Opaque token letting a client reuse the public SPA for a gated intake URL."""
+
+    __tablename__ = "kyc_intake_tokens"
+
+    token: Mapped[str] = mapped_column(String(96), primary_key=True)
+    label: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )

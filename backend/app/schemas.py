@@ -50,6 +50,8 @@ class KYCRow(BaseModel):
         default="",
         alias="KYC_Agent_Recon",
     )
+    confidence_score: int | None = Field(default=None, alias="confidenceScore")
+    staleness_days: int | None = Field(default=None, alias="stalenessDays")
 
 
 class AttachedDocument(BaseModel):
@@ -88,6 +90,7 @@ class ProcessResponse(BaseModel):
         default_factory=list,
         alias="pipelineErrors",
     )
+    intelligence: dict[str, Any] | None = None
 
 
 def history_metrics_from_rows_json(rows: list) -> tuple[int, int]:
@@ -153,6 +156,7 @@ class HistoryDetailResponse(BaseModel):
     duration_ms: int | None = Field(default=None, alias="durationMs")
     reference_urls: list[str] = Field(default_factory=list, alias="referenceUrls")
     rows: list[KYCRow]
+    pipeline_intelligence: dict[str, Any] | None = Field(default=None, alias="pipelineIntelligence")
 
 
 class SubmissionMetadataResponse(BaseModel):
@@ -163,6 +167,7 @@ class SubmissionMetadataResponse(BaseModel):
     analyst_notes: str = Field(alias="analystNotes")
     audit_log: list[dict[str, Any]] = Field(default_factory=list, alias="auditLog")
     escalated_serials: list[int] = Field(default_factory=list, alias="escalatedSerials")
+    workflow_state: dict[str, Any] = Field(default_factory=dict, alias="workflowState")
 
 
 class SubmissionMetadataUpdate(BaseModel):
@@ -171,6 +176,7 @@ class SubmissionMetadataUpdate(BaseModel):
     sign_off: bool | None = Field(default=None, alias="signOff")
     analyst_notes: str | None = Field(default=None, alias="analystNotes")
     escalated_serials: list[int] | None = Field(default=None, alias="escalatedSerials")
+    workflow_state: dict[str, Any] | None = Field(default=None, alias="workflowState")
 
 
 class AuditAppendRequest(BaseModel):
@@ -179,3 +185,11 @@ class AuditAppendRequest(BaseModel):
     action: str
     analyst: str | None = None
     detail: dict[str, Any] | None = None
+
+
+class NarrativeRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    company_name: str = Field(min_length=1, alias="companyName")
+    submission_id: str | None = Field(default=None, alias="submissionId")
+    rows: list[KYCRow] | None = None

@@ -1,0 +1,14 @@
+# Prototype playbook: policy-style checks surfaced to analysts.
+# Adjust without code deploy (reload on process start).
+rules:
+  - id: listed_company_needs_filings_sources
+    match_serial_numbers: [9]
+    when_answer_not_contains: "no"
+    min_sources_when_answered: 1
+    message: "Public listing question expects at least one web source citation."
+
+  - id: ubos_need_sources_when_populated
+    match_serial_numbers: [10]
+    require_min_sources_when_non_empty_answer: true
+    min_sources: 1
+    message: "UBO narrative should cite primary registry or filings where populated."

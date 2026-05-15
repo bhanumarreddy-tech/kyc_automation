@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import secrets
+from difflib import SequenceMatcher
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import KYCSubmission, KYCSubmissionMetadata
+from app.db.models import KYCIntakeToken, KYCSubmission, KYCSubmissionMetadata
 from app.schemas import AttachedDocument, KYCRow
 
 
@@ -20,6 +22,7 @@ async def create_kyc_submission(
     attached_documents: list[AttachedDocument],
     duration_ms: int,
     reference_urls: list[str] | None = None,
+    pipeline_intelligence: dict | None = None,
 ) -> KYCSubmission:
     payload = [r.model_dump(mode="json", by_alias=True) for r in rows]
     doc_meta = (
@@ -35,6 +38,7 @@ async def create_kyc_submission(
         document_filenames=doc_meta,
         reference_urls=ref_meta,
         duration_ms=duration_ms,
+        pipeline_intelligence=pipeline_intelligence,
     )
     session.add(record)
     await session.flush()
@@ -81,6 +85,7 @@ async def upsert_submission_metadata(
     sign_off: bool | None = None,
     analyst_notes: str | None = None,
     escalated_serials: list[int] | None = None,
+    workflow_state: dict[str, object] | None = None,
 ) -> KYCSubmissionMetadata:
     row = await get_submission_metadata_row(session, submission_id)
     if row is None:
@@ -90,6 +95,7 @@ async def upsert_submission_metadata(
             analyst_notes="",
             audit_log=[],
             escalated_serials=[],
+            workflow_state={},
         )
         session.add(row)
         await session.flush()
@@ -99,7 +105,75 @@ async def upsert_submission_metadata(
         row.analyst_notes = analyst_notes
     if escalated_serials is not None:
         row.escalated_serials = escalated_serials
+    if workflow_state is not None:
+        merged = dict(row.workflow_state or {})
+        merged.update(workflow_state)
+        row.workflow_state = merged
     return row
+
+
+async def similar_company_matches(
+    session: AsyncSession,
+    company_name: str,
+    *,
+    exclude_submission_id: UUID | None = None,
+    pool_limit: int = 350,
+    result_limit: int = 15,
+    min_similarity: float = 0.42,
+) -> list[dict[str, object]]:
+    """Lightweight fuzzy match over recent submissions (no dedicated search index yet)."""
+
+    stmt = (
+        select(KYCSubmission.id, KYCSubmission.company_name)
+        .order_by(KYCSubmission.created_at.desc())
+        .limit(pool_limit)
+    )
+    result = await session.execute(stmt)
+    pairs = result.all()
+
+    needle = company_name.strip().lower()
+    if not needle:
+        return []
+
+    scored: list[tuple[float, UUID, str]] = []
+    for sid, cname in pairs:
+        if exclude_submission_id is not None and sid == exclude_submission_id:
+            continue
+        label = (cname or "").strip()
+        if not label:
+            continue
+        low = label.lower()
+        ratio = SequenceMatcher(None, needle, low).ratio()
+        if ratio >= min_similarity or needle in low or low in needle:
+            scored.append((ratio, sid, label))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    out: list[dict[str, object]] = []
+    for ratio, sid, label in scored[:result_limit]:
+        out.append(
+            {
+                "submissionId": str(sid),
+                "companyName": label,
+                "similarity": round(ratio, 3),
+            }
+        )
+    return out
+
+
+async def mint_intake_token(session: AsyncSession, label: str = "") -> str:
+    raw = secrets.token_urlsafe(32)
+    tok = raw[:96]
+    row = KYCIntakeToken(token=tok, label=(label or "")[:512])
+    session.add(row)
+    await session.flush()
+    return tok
+
+
+async def get_intake_token(session: AsyncSession, token: str) -> KYCIntakeToken | None:
+    if not token.strip():
+        return None
+    stmt = select(KYCIntakeToken).where(KYCIntakeToken.token == token.strip())
+    return await session.scalar(stmt)
 
 
 async def append_metadata_audit(
