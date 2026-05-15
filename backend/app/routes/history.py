@@ -9,11 +9,20 @@ from fastapi.responses import RedirectResponse
 
 from app.config import get_settings
 from app.db.session import db_session_maker
-from app.db.submissions import get_kyc_submission, list_kyc_submissions
+from app.db.submissions import (
+    append_metadata_audit,
+    get_kyc_submission,
+    get_submission_metadata_row,
+    list_kyc_submissions,
+    upsert_submission_metadata,
+)
 from app.schemas import (
+    AuditAppendRequest,
     HistoryDetailResponse,
     HistoryListItem,
     KYCRow,
+    SubmissionMetadataResponse,
+    SubmissionMetadataUpdate,
     attached_documents_from_stored,
     history_metrics_from_rows_json,
 )
@@ -141,3 +150,115 @@ async def download_submission_attachment(
         ) from exc
 
     return RedirectResponse(url=url, status_code=302)
+
+
+def _meta_to_response(submission_id: str, row) -> SubmissionMetadataResponse:
+    return SubmissionMetadataResponse(
+        submission_id=submission_id,
+        sign_off=bool(row.sign_off),
+        analyst_notes=str(row.analyst_notes or ""),
+        audit_log=list(row.audit_log or []),
+        escalated_serials=[int(x) for x in (row.escalated_serials or []) if str(x).isdigit()],
+    )
+
+
+@router.get(
+    "/history/{submission_id}/metadata",
+    response_model=SubmissionMetadataResponse,
+    response_model_by_alias=True,
+)
+async def get_submission_metadata(submission_id: str) -> SubmissionMetadataResponse:
+    try:
+        uid = UUID(submission_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid submission id") from None
+
+    maker = db_session_maker()
+    if maker is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+
+    async with maker() as session:
+        rec = await get_kyc_submission(session, uid)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Submission not found")
+        meta = await get_submission_metadata_row(session, uid)
+        if meta is None:
+            return SubmissionMetadataResponse(
+                submission_id=submission_id,
+                sign_off=False,
+                analyst_notes="",
+                audit_log=[],
+                escalated_serials=[],
+            )
+        return _meta_to_response(submission_id, meta)
+
+
+@router.put(
+    "/history/{submission_id}/metadata",
+    response_model=SubmissionMetadataResponse,
+    response_model_by_alias=True,
+)
+async def put_submission_metadata(
+    submission_id: str,
+    body: SubmissionMetadataUpdate,
+) -> SubmissionMetadataResponse:
+    try:
+        uid = UUID(submission_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid submission id") from None
+
+    maker = db_session_maker()
+    if maker is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+
+    async with maker() as session:
+        rec = await get_kyc_submission(session, uid)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Submission not found")
+        row = await upsert_submission_metadata(
+            session,
+            uid,
+            sign_off=body.sign_off,
+            analyst_notes=body.analyst_notes,
+            escalated_serials=body.escalated_serials,
+        )
+        await session.commit()
+        await session.refresh(row)
+    return _meta_to_response(submission_id, row)
+
+
+@router.post(
+    "/history/{submission_id}/metadata/audit",
+    response_model=SubmissionMetadataResponse,
+    response_model_by_alias=True,
+)
+async def post_submission_audit(
+    submission_id: str,
+    body: AuditAppendRequest,
+) -> SubmissionMetadataResponse:
+    try:
+        uid = UUID(submission_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid submission id") from None
+
+    maker = db_session_maker()
+    if maker is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+
+    from datetime import datetime, timezone
+
+    entry = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "action": body.action,
+        "analyst": body.analyst,
+        "detail": body.detail,
+    }
+
+    async with maker() as session:
+        rec = await get_kyc_submission(session, uid)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Submission not found")
+        row = await append_metadata_audit(session, uid, entry)
+        await session.commit()
+        await session.refresh(row)
+    return _meta_to_response(submission_id, row)

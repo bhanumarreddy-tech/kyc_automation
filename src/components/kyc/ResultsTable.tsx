@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useMemo,
   useState,
   type Dispatch,
@@ -32,8 +33,12 @@ import {
   ArrowUpDown,
   Check,
   ExternalLink,
+  Eye,
   Filter,
+  LayoutList,
+  ListOrdered,
   Pencil,
+  PanelRight,
   RotateCcw,
   X,
 } from "lucide-react";
@@ -46,7 +51,7 @@ import type {
 } from "@/data/kycQuestions";
 import { ExportOptions } from "@/components/kyc/ExportOptions";
 import { KYCStatsBar } from "@/components/kyc/KYCStatsBar";
-import { Switch } from "@/components/ui/switch";
+import { KYCCoverageCharts } from "@/components/kyc/KYCCoverageCharts";
 import {
   Dialog,
   DialogContent,
@@ -55,6 +60,8 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
 import { classifyRowDelta, readAuditLog, type AuditLogEntry } from "@/lib/kycAnalystToolkit";
 
 type EditingField = "answer" | "sources" | "analystComments";
@@ -140,6 +147,8 @@ interface ResultsTableProps {
   signOff?: boolean;
   onSignOffChange?: (value: boolean) => void;
   onAudit?: (entry: Omit<AuditLogEntry, "at">) => void;
+  /** Server-backed escalations (e.g. from history metadata). */
+  initialEscalatedSerials?: number[];
 }
 
 const sourcesToText = (sources: SourceLink[]): string =>
@@ -171,6 +180,85 @@ const validationSourcesToText = (sources: ValidationSource[]): string =>
       return parts.join(" | ");
     })
     .join("\n");
+
+const EXCERPT_PREVIEW_MAX_CHARS = 240;
+
+function pickPrimaryValidationSource(sources: ValidationSource[]): ValidationSource | undefined {
+  if (!sources.length) return undefined;
+  const withExcerpt = sources.find((s) => (s.excerpt ?? "").trim().length > 0);
+  return withExcerpt ?? sources[0];
+}
+
+function collapseWs(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/** Tooltip listing all sources (documents + excerpt clues). */
+function validationSourcesTooltip(sources: ValidationSource[]): string {
+  return sources
+    .map((s, i) => {
+      const head = [s.document, typeof s.page === "number" ? `p.${s.page}` : ""]
+        .filter(Boolean)
+        .join(" ");
+      const ex = collapseWs(s.excerpt ?? "");
+      if (ex)
+        return `${i + 1}. ${head} — "${ex.length > 300 ? `${ex.slice(0, 299)}…` : ex}"`;
+      return `${i + 1}. ${head}`;
+    })
+    .join(" | ");
+}
+
+interface ValidationPreviewInline {
+  title: string;
+  summary: ReactNode;
+}
+
+function buildValidationSourcesPreview(
+  sources: ValidationSource[],
+  muted: boolean,
+): ValidationPreviewInline {
+  const primary = pickPrimaryValidationSource(sources)!;
+  const rest = sources.length > 1 ? sources.length - 1 : 0;
+  const title = validationSourcesTooltip(sources);
+  const excerptRaw = collapseWs(primary.excerpt ?? "");
+  const textCls = muted ? "text-muted-foreground" : "text-foreground/90";
+
+  if (excerptRaw) {
+    const excerpt =
+      excerptRaw.length > EXCERPT_PREVIEW_MAX_CHARS
+        ? `${excerptRaw.slice(0, EXCERPT_PREVIEW_MAX_CHARS - 1).trimEnd()}…`
+        : excerptRaw;
+    return {
+      title,
+      summary: (
+        <span title={title} className={`block min-w-0 line-clamp-2 text-xs break-words leading-snug ${textCls}`}>
+          <span className="text-muted-foreground/70">&ldquo;</span>
+          {excerpt}
+          <span className="text-muted-foreground/70">&rdquo;</span>
+          {rest > 0 && (
+            <span className="text-muted-foreground font-normal">{` · +${rest}`}</span>
+          )}
+        </span>
+      ),
+    };
+  }
+
+  let docLine = primary.document?.trim() || "Source";
+  if (typeof primary.page === "number") docLine += ` · p.${primary.page}`;
+  if (rest > 0) docLine += ` · +${rest}`;
+
+  return {
+    title,
+    summary: (
+      <span
+        title={title}
+        className={`block min-w-0 line-clamp-1 text-xs ${muted ? "text-muted-foreground" : "font-medium text-foreground/90"}`}
+      >
+        {docLine}
+      </span>
+    ),
+  };
+}
 
 function rowPassesFilters(row: KYCRow, f: TableFiltersState): boolean {
   const sec = f.sectionNo.trim();
@@ -217,6 +305,15 @@ function rowPassesFilters(row: KYCRow, f: TableFiltersState): boolean {
       return false;
   }
   return true;
+}
+
+function rowInReviewQueue(row: KYCRow, escalated: Set<number>): boolean {
+  const a = row.answer.trim().toLowerCase();
+  const empty = !a || a === "not found";
+  if (empty) return true;
+  if (row.validation !== "Yes") return true;
+  if (escalated.has(row.serialNo)) return true;
+  return false;
 }
 
 function validationRank(v: ValidationStatus): number {
@@ -321,7 +418,7 @@ function SortColumnHeader({
       <div className="flex items-center gap-1">
         <button
           type="button"
-          className="inline-flex items-center gap-1 text-left font-medium hover:text-foreground/90 mr-auto"
+          className="inline-flex items-center gap-1 text-left font-medium hover:text-foreground/90 mr-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
           onClick={() => cycleSort(column)}
         >
           <span className="leading-tight">{title}</span>
@@ -401,6 +498,7 @@ export function ResultsTable({
   signOff = false,
   onSignOffChange,
   onAudit,
+  initialEscalatedSerials = [],
 }: ResultsTableProps) {
   const [editing, setEditing] = useState<{ serialNo: number; field: EditingField } | null>(
     null
@@ -412,20 +510,37 @@ export function ResultsTable({
   const [showChangedOnly, setShowChangedOnly] = useState(false);
   const [validationPeekRow, setValidationPeekRow] = useState<KYCRow | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [reviewQueue, setReviewQueue] = useState(false);
+  const [selectedSerials, setSelectedSerials] = useState<Set<number>>(() => new Set());
+  const [density, setDensity] = useState<"comfortable" | "compact">("comfortable");
+  const [splitDetail, setSplitDetail] = useState(false);
+  const [evidenceDrawerRow, setEvidenceDrawerRow] = useState<KYCRow | null>(null);
+  const [detailFocusSerial, setDetailFocusSerial] = useState<number | null>(null);
+  const [escalatedSerials, setEscalatedSerials] = useState<Set<number>>(() => new Set());
 
   const baselineBySerial = useMemo(() => {
     if (!comparisonBaseline?.length) return null;
     return new Map(comparisonBaseline.map((r) => [r.serialNo, r]));
   }, [comparisonBaseline]);
 
+  useEffect(() => {
+    setEscalatedSerials(new Set(initialEscalatedSerials));
+  }, [initialEscalatedSerials]);
+
   const getRowHighlightClass = (row: KYCRow) => {
-    if (!baselineBySerial) return "";
+    const parts: string[] = [];
+    if (detailFocusSerial === row.serialNo) parts.push("ring-1 ring-primary/60");
+    if (!baselineBySerial) return parts.join(" ");
     const d = classifyRowDelta(row, baselineBySerial.get(row.serialNo));
-    return d.changed ? "bg-amber-500/10 dark:bg-amber-500/15" : "";
+    if (d.changed) parts.push("bg-amber-500/10 dark:bg-amber-500/15");
+    return parts.join(" ");
   };
 
   const filteredSortedGrouped = useMemo(() => {
     let filtered = rows.filter((row) => rowPassesFilters(row, filters));
+    if (reviewQueue) {
+      filtered = filtered.filter((row) => rowInReviewQueue(row, escalatedSerials));
+    }
     if (showChangedOnly && baselineBySerial) {
       filtered = filtered.filter((row) =>
         classifyRowDelta(row, baselineBySerial.get(row.serialNo)).changed
@@ -443,17 +558,61 @@ export function ResultsTable({
       });
     }
     return regroupConsecutive(sorted);
-  }, [rows, filters, sortColumn, sortDir, showChangedOnly, baselineBySerial]);
+  }, [
+    rows,
+    filters,
+    sortColumn,
+    sortDir,
+    showChangedOnly,
+    baselineBySerial,
+    reviewQueue,
+    escalatedSerials,
+  ]);
 
   const filteredCount = useMemo(() => {
     let filtered = rows.filter((row) => rowPassesFilters(row, filters));
+    if (reviewQueue) {
+      filtered = filtered.filter((row) => rowInReviewQueue(row, escalatedSerials));
+    }
     if (showChangedOnly && baselineBySerial) {
       filtered = filtered.filter((row) =>
         classifyRowDelta(row, baselineBySerial.get(row.serialNo)).changed
       );
     }
     return filtered.length;
-  }, [rows, filters, showChangedOnly, baselineBySerial]);
+  }, [rows, filters, showChangedOnly, baselineBySerial, reviewQueue, escalatedSerials]);
+
+  const triageSerials = useMemo(() => {
+    const serials = rows
+      .filter((r) => rowPassesFilters(r, filters) && rowInReviewQueue(r, escalatedSerials))
+      .map((r) => r.serialNo)
+      .sort((a, b) => a - b);
+    return serials;
+  }, [rows, filters, escalatedSerials]);
+
+  useEffect(() => {
+    if (!reviewQueue) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.("input, textarea, select, [contenteditable=true]")) return;
+      if (triageSerials.length === 0) return;
+      if (e.key === "ArrowDown" || (e.key === "j" && !e.metaKey && !e.ctrlKey)) {
+        e.preventDefault();
+        setDetailFocusSerial((prev) => {
+          const idx = prev == null ? -1 : triageSerials.indexOf(prev);
+          return triageSerials[Math.min(triageSerials.length - 1, idx + 1)] ?? triageSerials[0]!;
+        });
+      } else if (e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        setDetailFocusSerial((prev) => {
+          const idx = prev == null ? triageSerials.length : triageSerials.indexOf(prev);
+          return triageSerials[Math.max(0, idx - 1)];
+        });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [reviewQueue, triageSerials]);
 
   const cycleSort = (col: SortColumnId) => {
     if (sortColumn !== col) {
@@ -599,58 +758,49 @@ export function ResultsTable({
     const delta = baselineBySerial
       ? classifyRowDelta(row, baselineBySerial.get(row.serialNo))
       : null;
-    const body =
-      row.validation !== "Yes" ? (
-        <span className="text-muted-foreground text-xs">—</span>
-      ) : row.validationSources.length === 0 ? (
-        <span className="text-muted-foreground text-xs">No document source</span>
-      ) : (
-        <div className="space-y-1">
-          {row.validationSources.map((src, idx) => (
-            <div key={idx} className="text-xs">
-              <span className="font-medium">{src.document}</span>
-              {src.url?.trim() && (
-                <div className="mt-0.5">
-                  <a
-                    href={src.url.trim()}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary underline break-all"
-                  >
-                    {src.url.trim()}
-                  </a>
-                </div>
-              )}
-              {typeof src.page === "number" && (
-                <span className="text-muted-foreground"> (p.{src.page})</span>
-              )}
-              {src.excerpt && (
-                <div className="text-muted-foreground italic mt-0.5 line-clamp-2">
-                  &ldquo;{src.excerpt}&rdquo;
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
+    const hasSources = row.validationSources.length > 0;
+    const showPeek =
+      row.validation === "Yes" || hasSources || Boolean(delta?.changed);
+
+    let summary: ReactNode;
+    if (hasSources) {
+      const muted = row.validation !== "Yes";
+      summary = buildValidationSourcesPreview(row.validationSources, muted).summary;
+    } else if (row.validation === "Yes") {
+      summary = (
+        <span className="text-xs text-muted-foreground italic">No citation extracted</span>
       );
+    } else if (delta?.changed) {
+      summary = (
+        <span className="text-xs text-amber-800 dark:text-amber-200/95">Changed vs prior run</span>
+      );
+    } else {
+      summary = <span className="text-muted-foreground text-xs">—</span>;
+    }
 
     return (
-      <div className="space-y-1.5">
+      <div className="flex flex-col gap-1 min-w-0">
         {delta?.changed && (
-          <div className="text-[10px] uppercase tracking-wide text-amber-800 dark:text-amber-300 font-medium">
+          <div className="text-[10px] uppercase tracking-wide text-amber-800 dark:text-amber-300 font-medium leading-none">
             Δ {delta.tags.join(" · ")}
           </div>
         )}
-        {body}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-7 text-xs w-full max-w-[140px]"
-          onClick={() => setValidationPeekRow(row)}
-        >
-          Source peek
-        </Button>
+        <div className="flex items-start gap-0.5 min-w-0">
+          <div className="min-w-0 flex-1 leading-snug">{summary}</div>
+          {showPeek && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0 -mr-1 text-muted-foreground hover:text-foreground"
+              title="Citation details"
+              aria-label={`Citation details for question ${row.serialNo}`}
+              onClick={() => setValidationPeekRow(row)}
+            >
+              <Eye className="h-3.5 w-3.5" aria-hidden />
+            </Button>
+          )}
+        </div>
       </div>
     );
   };
@@ -720,6 +870,9 @@ export function ResultsTable({
 
   const anyFilterActive = filtersAreActive(filters);
 
+  const splitRow =
+    evidenceDrawerRow ?? rows.find((r) => r.serialNo === detailFocusSerial) ?? null;
+
   const exportAuditLogJson = () => {
     const data = readAuditLog();
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
@@ -734,6 +887,90 @@ export function ResultsTable({
   return (
     <div className="space-y-4">
       <KYCStatsBar rows={rows} />
+      <KYCCoverageCharts rows={rows} />
+
+      <div className="flex flex-wrap gap-2 items-center">
+        <Button
+          type="button"
+          size="sm"
+          variant={reviewQueue ? "default" : "outline"}
+          onClick={() => {
+            setReviewQueue((v) => !v);
+            setDetailFocusSerial(null);
+          }}
+        >
+          <ListOrdered className="h-4 w-4 mr-1" />
+          Review queue
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => setDensity((d) => (d === "comfortable" ? "compact" : "comfortable"))}
+        >
+          <LayoutList className="h-4 w-4 mr-1" />
+          {density === "compact" ? "Compact" : "Comfortable"}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={splitDetail ? "secondary" : "outline"}
+          onClick={() => setSplitDetail((v) => !v)}
+        >
+          <PanelRight className="h-4 w-4 mr-1" />
+          Split view
+        </Button>
+        {reviewQueue ? (
+          <span className="text-xs text-muted-foreground">
+            Queue: {triageSerials.length} · j/k or ↑/↓ to step
+          </span>
+        ) : null}
+        {selectedSerials.size > 0 ? (
+          <span className="text-xs text-muted-foreground">{selectedSerials.size} selected</span>
+        ) : null}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={!reviewQueue || triageSerials.length === 0}
+          onClick={() => setSelectedSerials(new Set(triageSerials))}
+        >
+          Select queue
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={selectedSerials.size === 0}
+          onClick={() => {
+            const next = new Set(escalatedSerials);
+            selectedSerials.forEach((s) => next.add(s));
+            setEscalatedSerials(next);
+            onAudit?.({
+              action: "bulk_escalate",
+              analyst: analystName?.trim() || undefined,
+              detail: { serials: [...selectedSerials] },
+            });
+          }}
+        >
+          Mark selected escalated
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedSerials(new Set())}>
+          Clear selection
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            const t =
+              rows.find((r) => r.serialNo === detailFocusSerial) ?? rows[0] ?? null;
+            if (t) setEvidenceDrawerRow(t);
+          }}
+        >
+          Evidence drawer
+        </Button>
+      </div>
 
       <div className="rounded-md border bg-muted/30 p-3 flex flex-wrap gap-4 items-end text-sm">
         {onAnalystNameChange && (
@@ -822,6 +1059,11 @@ export function ResultsTable({
           <ExportOptions
             companyName={companyName}
             rows={rows}
+            selectedRows={
+              selectedSerials.size > 0
+                ? rows.filter((r) => selectedSerials.has(r.serialNo))
+                : undefined
+            }
             submissionId={submissionMeta?.submissionId}
             savedAt={submissionMeta?.savedAt}
             referenceUrls={referenceUrls}
@@ -836,7 +1078,10 @@ export function ResultsTable({
         </div>
       </div>
 
-      <div className="border rounded-lg overflow-hidden">
+      <div
+        className={`${splitDetail ? "grid gap-4 lg:grid-cols-[1fr_minmax(260px,360px)]" : ""}`}
+      >
+        <div className="border rounded-lg overflow-hidden min-w-0">
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
@@ -1080,6 +1325,8 @@ export function ResultsTable({
                   sectionNo={section.sectionNo}
                   sectionName={section.sectionName}
                   rows={section.rows}
+                  compact={density === "compact"}
+                  onRowActivate={(sn) => setDetailFocusSerial(sn)}
                   getRowClassName={getRowHighlightClass}
                   renderAnswerCell={renderAnswerCell}
                   renderSourcesCell={renderSourcesCell}
@@ -1093,6 +1340,78 @@ export function ResultsTable({
           </Table>
         </div>
       </div>
+
+      {splitDetail && (
+        <aside className="border rounded-lg bg-muted/20 p-4 text-sm space-y-4 max-h-[calc(100vh-10rem)] overflow-y-auto lg:sticky lg:top-4 self-start">
+          <div className="font-semibold text-foreground">Detail / evidence</div>
+          {!splitRow ? (
+            <p className="text-muted-foreground">Select a row from the review queue (j/k) or open Evidence drawer.</p>
+          ) : (
+            <>
+              <div>
+                <div className="text-xs text-muted-foreground">Q{splitRow.serialNo}</div>
+                <p className="font-medium leading-snug">{splitRow.question}</p>
+              </div>
+              <div>
+                <div className="text-xs uppercase text-muted-foreground mb-1">Answer</div>
+                <p className="whitespace-pre-wrap leading-relaxed">{splitRow.answer || "—"}</p>
+              </div>
+              <div>
+                <div className="text-xs uppercase text-muted-foreground mb-1">Web sources</div>
+                {splitRow.sources.length === 0 ? (
+                  <span className="text-muted-foreground">None</span>
+                ) : (
+                  <ul className="space-y-2">
+                    {splitRow.sources.map((s, i) => (
+                      <li key={i}>
+                        <a
+                          href={s.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline break-all text-xs inline-flex gap-1"
+                        >
+                          <ExternalLink className="h-3 w-3 shrink-0" />
+                          {s.title || s.url}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <div className="text-xs uppercase text-muted-foreground mb-1">Document validation</div>
+                {splitRow.validationSources.length === 0 ? (
+                  <span className="text-muted-foreground">No citations</span>
+                ) : (
+                  <ul className="space-y-3">
+                    {splitRow.validationSources.map((src, idx) => (
+                      <li key={idx} className="border rounded-md p-2 space-y-1">
+                        <div className="font-medium text-xs">{src.document}</div>
+                        {src.url?.trim() && (
+                          <a
+                            href={src.url.trim()}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-primary underline break-all"
+                          >
+                            {src.url}
+                          </a>
+                        )}
+                        {src.excerpt && (
+                          <blockquote className="text-xs border-l-2 pl-2 italic text-muted-foreground whitespace-pre-wrap">
+                            {src.excerpt}
+                          </blockquote>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
+        </aside>
+      )}
+    </div>
 
       <Dialog open={validationPeekRow !== null} onOpenChange={(o) => !o && setValidationPeekRow(null)}>
         <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
@@ -1193,6 +1512,80 @@ export function ResultsTable({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Sheet
+        open={evidenceDrawerRow !== null}
+        onOpenChange={(o) => {
+          if (!o) setEvidenceDrawerRow(null);
+        }}
+      >
+        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>Evidence — Q{evidenceDrawerRow?.serialNo ?? ""}</SheetTitle>
+          </SheetHeader>
+          {evidenceDrawerRow && (
+            <div className="space-y-4 text-sm mt-4">
+              <p className="text-muted-foreground text-xs">{evidenceDrawerRow.question}</p>
+              <div>
+                <div className="text-xs uppercase text-muted-foreground mb-1">Web sources</div>
+                {evidenceDrawerRow.sources.length === 0 ? (
+                  <span className="text-muted-foreground">None</span>
+                ) : (
+                  <ul className="space-y-2">
+                    {evidenceDrawerRow.sources.map((s, i) => (
+                      <li key={i}>
+                        <a
+                          href={s.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline break-all text-xs inline-flex gap-1"
+                        >
+                          <ExternalLink className="h-3 w-3 shrink-0" />
+                          {s.title || s.url}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <div className="text-xs uppercase text-muted-foreground mb-1">
+                  Document validation
+                </div>
+                {evidenceDrawerRow.validationSources.length === 0 ? (
+                  <span className="text-muted-foreground">No citations</span>
+                ) : (
+                  <ul className="space-y-3">
+                    {evidenceDrawerRow.validationSources.map((src, idx) => (
+                      <li key={idx} className="border rounded-md p-3 space-y-2">
+                        <div className="font-medium">{src.document}</div>
+                        {typeof src.page === "number" && (
+                          <div className="text-xs text-muted-foreground">Page {src.page}</div>
+                        )}
+                        {src.url?.trim() && (
+                          <a
+                            href={src.url.trim()}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary text-xs underline break-all inline-flex gap-1"
+                          >
+                            Open link <ExternalLink className="h-3 w-3 shrink-0" />
+                          </a>
+                        )}
+                        {src.excerpt && (
+                          <blockquote className="text-xs border-l-2 pl-2 italic text-muted-foreground whitespace-pre-wrap">
+                            {src.excerpt}
+                          </blockquote>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
@@ -1201,6 +1594,8 @@ interface SectionRowsProps {
   sectionNo: number;
   sectionName: string;
   rows: KYCRow[];
+  compact?: boolean;
+  onRowActivate?: (serialNo: number) => void;
   getRowClassName?: (row: KYCRow) => string;
   renderAnswerCell: (row: KYCRow) => ReactNode;
   renderSourcesCell: (row: KYCRow) => ReactNode;
@@ -1214,6 +1609,8 @@ function SectionRows({
   sectionNo,
   sectionName,
   rows,
+  compact = false,
+  onRowActivate,
   getRowClassName,
   renderAnswerCell,
   renderSourcesCell,
@@ -1222,9 +1619,10 @@ function SectionRows({
   renderKycAgentReconCell,
   renderAnalystCommentsCell,
 }: SectionRowsProps) {
+  const cell = compact ? "text-xs py-1.5" : "text-sm py-2.5";
   return (
     <>
-      <TableRow className="bg-muted/40">
+      <TableRow className="bg-muted/90 sticky top-0 z-10 shadow-sm backdrop-blur-sm">
         <TableCell colSpan={9} className="font-semibold text-sm">
           Section {sectionNo} &mdash; {sectionName}
         </TableCell>
@@ -1232,17 +1630,28 @@ function SectionRows({
       {rows.map((row) => (
         <TableRow
           key={row.serialNo}
-          className={`align-top ${getRowClassName?.(row) ?? ""}`.trim()}
+          className={`align-top cursor-pointer ${getRowClassName?.(row) ?? ""}`.trim()}
+          tabIndex={0}
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest("a,button,input,textarea,select")) return;
+            onRowActivate?.(row.serialNo);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onRowActivate?.(row.serialNo);
+            }
+          }}
         >
-          <TableCell className="text-sm font-medium align-top">{row.sectionNo}</TableCell>
-          <TableCell className="text-sm font-medium align-top">{row.serialNo}</TableCell>
-          <TableCell className="text-sm align-top">{row.question}</TableCell>
-          <TableCell className="bg-primary/5 align-top">{renderAnswerCell(row)}</TableCell>
-          <TableCell className="align-top">{renderSourcesCell(row)}</TableCell>
-          <TableCell className="align-top">{renderValidationCell(row)}</TableCell>
-          <TableCell className="align-top">{renderValidationSourcesCell(row)}</TableCell>
-          <TableCell className="align-top">{renderKycAgentReconCell(row)}</TableCell>
-          <TableCell className="align-top">{renderAnalystCommentsCell(row)}</TableCell>
+          <TableCell className={`${cell} font-medium align-top`}>{row.sectionNo}</TableCell>
+          <TableCell className={`${cell} font-medium align-top`}>{row.serialNo}</TableCell>
+          <TableCell className={`${cell} align-top`}>{row.question}</TableCell>
+          <TableCell className={`bg-primary/5 align-top ${cell}`}>{renderAnswerCell(row)}</TableCell>
+          <TableCell className={`align-top ${cell}`}>{renderSourcesCell(row)}</TableCell>
+          <TableCell className={`align-top ${cell}`}>{renderValidationCell(row)}</TableCell>
+          <TableCell className={`align-top ${cell}`}>{renderValidationSourcesCell(row)}</TableCell>
+          <TableCell className={`align-top ${cell}`}>{renderKycAgentReconCell(row)}</TableCell>
+          <TableCell className={`align-top ${cell}`}>{renderAnalystCommentsCell(row)}</TableCell>
         </TableRow>
       ))}
     </>

@@ -15,9 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any
 
 from app.config import get_settings
-from app.questions import KYC_QUESTIONS, group_by_section
+from app.questions import KYC_QUESTIONS, KYCQuestion, group_by_section
 from app.schemas import KYCRow, SourceLink, ValidationSource
 from app.services.answer_section import AnsweredQuestion, answer_section
 from app.services.documents import parse_documents
@@ -31,16 +35,63 @@ from app.services.validate_section import ValidationResult, validate_section
 
 logger = logging.getLogger(__name__)
 
+ProgressPayload = dict[str, Any]
+
+
+class PipelineCancelled(Exception):
+    """Raised when ``cancel_event`` is set between major pipeline phases."""
+
+
+@dataclass
+class RunPipelineOutcome:
+    rows: list[KYCRow]
+    section_errors: list[dict[str, Any]] = field(default_factory=list)
+
+
+async def _emit(
+    on_progress: Callable[[ProgressPayload], Awaitable[None] | None] | None,
+    payload: ProgressPayload,
+) -> None:
+    if on_progress is None:
+        return
+    try:
+        res = on_progress(payload)
+        if asyncio.iscoroutine(res):
+            await res
+    except Exception:  # pragma: no cover
+        logger.warning("on_progress failed", exc_info=True)
+
+
+def _error_stub_answers(questions: list[KYCQuestion], err_id: str, phase: str) -> list[AnsweredQuestion]:
+    msg = (
+        f"[Automated {phase} failed for this section — support ref {err_id}. "
+        "Retry the run or provide supporting documents.]"
+    )
+    return [AnsweredQuestion(q.serial_no, msg, []) for q in questions]
+
+
+def _empty_validations(questions: list[KYCQuestion]) -> list[ValidationResult]:
+    return [ValidationResult(q.serial_no, "", []) for q in questions]
+
 
 async def run_pipeline(
     company: str,
     uploads: list[tuple[str, bytes, str]],
     reference_urls: list[str] | None = None,
-) -> list[KYCRow]:
-    """Run the full KYC pipeline and return the populated questionnaire rows."""
+    *,
+    on_progress: Callable[[ProgressPayload], Awaitable[None] | None] | None = None,
+    cancel_event: asyncio.Event | None = None,
+) -> RunPipelineOutcome:
+    """Run the full KYC pipeline and return rows plus per-section error metadata."""
 
     settings = get_settings()
     sections = group_by_section()
+    section_errors: list[dict[str, Any]] = []
+
+    await _emit(
+        on_progress,
+        {"phase": "prep", "status": "started", "detail": "Parsing documents and reference URLs"},
+    )
 
     ref_urls = reference_urls or []
     upload_docs, url_docs, sec_hub = await asyncio.gather(
@@ -56,9 +107,15 @@ async def run_pipeline(
         len(url_docs),
     )
 
-    # Throttle concurrency so we stay under Gemini API quota. Both phases use
-    # independent semaphores configured via env (ANSWER_CONCURRENCY,
-    # VALIDATION_CONCURRENCY).
+    await _emit(
+        on_progress,
+        {
+            "phase": "prep",
+            "status": "complete",
+            "detail": f"Loaded {len(upload_docs)} file(s), {len(url_docs)} URL doc(s)",
+        },
+    )
+
     answer_sem = asyncio.Semaphore(settings.answer_concurrency)
     validation_sem = asyncio.Semaphore(settings.validation_concurrency)
     inter_call_delay = settings.answer_inter_call_delay_seconds
@@ -73,7 +130,7 @@ async def run_pipeline(
         settings.gemini_validation_model,
     )
 
-    async def _bounded_answer(section_no: int, section_name: str, questions: list) -> list[AnsweredQuestion]:
+    async def _bounded_answer(section_no: int, section_name: str, questions: list[KYCQuestion]) -> list[AnsweredQuestion]:
         async with answer_sem:
             result = await answer_section(
                 company,
@@ -82,11 +139,6 @@ async def run_pipeline(
                 questions,
                 issuer_sec_hint=issuer_sec_hint,
             )
-            # Hold the semaphore across the post-call sleep so the next queued
-            # answer call doesn't fire while we're still waiting for the
-            # rolling per-minute token window to free up. Skip the sleep on
-            # the conceptually "last" call - we don't know which one that
-            # is here, so we always sleep and accept a tiny tail latency.
             if inter_call_delay > 0:
                 await asyncio.sleep(inter_call_delay)
             return result
@@ -94,7 +146,7 @@ async def run_pipeline(
     async def _bounded_validate(
         section_no: int,
         section_name: str,
-        questions: list,
+        questions: list[KYCQuestion],
         answers: list[AnsweredQuestion],
     ) -> list[ValidationResult]:
         async with validation_sem:
@@ -102,13 +154,91 @@ async def run_pipeline(
                 company, section_no, section_name, questions, answers, parsed_docs
             )
 
+    n_sec = len(sections)
+    answer_lock = asyncio.Lock()
+    answer_done = 0
+
+    async def tracked_answer(
+        idx: int,
+        section_no: int,
+        section_name: str,
+        questions: list[KYCQuestion],
+    ) -> list[AnsweredQuestion]:
+        nonlocal answer_done
+        if cancel_event and cancel_event.is_set():
+            raise PipelineCancelled()
+        try:
+            result = await _bounded_answer(section_no, section_name, questions)
+        except Exception as exc:
+            err_id = uuid.uuid4().hex[:12]
+            logger.exception("Answer section %s failed: %s", section_no, exc)
+            section_errors.append(
+                {
+                    "sectionNo": section_no,
+                    "phase": "answer",
+                    "message": f"{type(exc).__name__}: {exc}",
+                    "errorId": err_id,
+                }
+            )
+            result = _error_stub_answers(questions, err_id, "web research")
+        async with answer_lock:
+            answer_done += 1
+            done = answer_done
+        await _emit(
+            on_progress,
+            {
+                "phase": "answer",
+                "status": "section_complete",
+                "completedSections": done,
+                "totalSections": n_sec,
+                "sectionNo": section_no,
+                "sectionName": section_name,
+                "detail": f"Answer phase {done}/{n_sec}: {section_name}",
+            },
+        )
+        return result
+
     answer_tasks = [
-        _bounded_answer(section_no, section_name, questions)
-        for section_no, section_name, questions in sections
+        tracked_answer(idx, section_no, section_name, questions)
+        for idx, (section_no, section_name, questions) in enumerate(sections)
     ]
-    answers_per_section: list[list[AnsweredQuestion]] = await asyncio.gather(
-        *answer_tasks, return_exceptions=False
+    answers_per_section: list[list[AnsweredQuestion]] | list[Any] = await asyncio.gather(
+        *answer_tasks,
+        return_exceptions=True,
     )
+
+    # If any task raised non-Exception list (e.g. PipelineCancelled), handle
+    normalized_answers: list[list[AnsweredQuestion]] = []
+    for idx, res in enumerate(answers_per_section):
+        if isinstance(res, PipelineCancelled):
+            section_no, section_name, questions = sections[idx]
+            err_id = uuid.uuid4().hex[:12]
+            section_errors.append(
+                {
+                    "sectionNo": section_no,
+                    "phase": "answer",
+                    "message": "Cancelled",
+                    "errorId": err_id,
+                }
+            )
+            normalized_answers.append(_error_stub_answers(questions, err_id, "web research"))
+        elif isinstance(res, BaseException):
+            section_no, section_name, questions = sections[idx]
+            err_id = uuid.uuid4().hex[:12]
+            logger.exception("Unexpected answer task failure section=%s", section_no)
+            section_errors.append(
+                {
+                    "sectionNo": section_no,
+                    "phase": "answer",
+                    "message": f"{type(res).__name__}: {res}",
+                    "errorId": err_id,
+                }
+            )
+            normalized_answers.append(_error_stub_answers(questions, err_id, "web research"))
+        else:
+            normalized_answers.append(res)
+
+    answers_per_section = normalized_answers
 
     await sanitize_answer_sources_urls(answers_per_section, settings)
     prioritize_and_cap_answer_sources(
@@ -117,18 +247,98 @@ async def run_pipeline(
         verification_hub_sources=sec_hub.hub_sources if sec_hub else None,
     )
 
-    validation_tasks = [
-        _bounded_validate(
-            section_no,
-            section_name,
-            questions,
-            answers_per_section[idx],
+    if cancel_event and cancel_event.is_set():
+        await _emit(
+            on_progress,
+            {"phase": "cancelled", "status": "stopping", "detail": "Skipped validation (cancelled)"},
         )
-        for idx, (section_no, section_name, questions) in enumerate(sections)
-    ]
-    validations_per_section: list[list[ValidationResult]] = await asyncio.gather(
-        *validation_tasks, return_exceptions=False
-    )
+        validations_per_section = [_empty_validations(g[2]) for g in sections]
+    else:
+        await _emit(
+            on_progress,
+            {
+                "phase": "validate",
+                "status": "started",
+                "detail": "Running document validation (8 sections)",
+            },
+        )
+
+        val_done_lock = asyncio.Lock()
+        val_done = 0
+
+        async def tracked_validate(
+            _vidx: int,
+            section_no: int,
+            section_name: str,
+            questions: list[KYCQuestion],
+            answers: list[AnsweredQuestion],
+        ) -> list[ValidationResult]:
+            nonlocal val_done
+            if cancel_event and cancel_event.is_set():
+                raise PipelineCancelled()
+            try:
+                result = await _bounded_validate(section_no, section_name, questions, answers)
+            except Exception as exc:
+                err_id = uuid.uuid4().hex[:12]
+                logger.exception("Validation section %s failed: %s", section_no, exc)
+                section_errors.append(
+                    {
+                        "sectionNo": section_no,
+                        "phase": "validate",
+                        "message": f"{type(exc).__name__}: {exc}",
+                        "errorId": err_id,
+                    }
+                )
+                result = _empty_validations(questions)
+            async with val_done_lock:
+                val_done += 1
+                done = val_done
+            await _emit(
+                on_progress,
+                {
+                    "phase": "validate",
+                    "status": "section_complete",
+                    "completedSections": done,
+                    "totalSections": n_sec,
+                    "sectionNo": section_no,
+                    "sectionName": section_name,
+                    "detail": f"Validation phase {done}/{n_sec}: {section_name}",
+                },
+            )
+            return result
+
+        validation_tasks = [
+            tracked_validate(
+                idx,
+                section_no,
+                section_name,
+                questions,
+                answers_per_section[idx],
+            )
+            for idx, (section_no, section_name, questions) in enumerate(sections)
+        ]
+        raw_vals = await asyncio.gather(*validation_tasks, return_exceptions=True)
+
+        validations_per_section = []
+        for idx, res in enumerate(raw_vals):
+            if isinstance(res, PipelineCancelled):
+                _, _, questions = sections[idx]
+                validations_per_section.append(_empty_validations(questions))
+            elif isinstance(res, BaseException):
+                section_no, _, questions = sections[idx]
+                err_id = uuid.uuid4().hex[:12]
+                logger.exception("Unexpected validation task failure section=%s", section_no)
+                section_errors.append(
+                    {
+                        "sectionNo": section_no,
+                        "phase": "validate",
+                        "message": f"{type(res).__name__}: {res}",
+                        "errorId": err_id,
+                    }
+                )
+                validations_per_section.append(_empty_validations(questions))
+            else:
+                validations_per_section.append(res)
 
     answers_by_serial: dict[int, AnsweredQuestion] = {}
     validations_by_serial: dict[int, ValidationResult] = {}
@@ -175,8 +385,9 @@ async def run_pipeline(
         )
 
     logger.info(
-        "Pipeline finished for company=%r: %d questionnaire rows returned",
+        "Pipeline finished for company=%r: %d questionnaire rows, %d section error(s)",
         company,
         len(rows),
+        len(section_errors),
     )
-    return rows
+    return RunPipelineOutcome(rows=rows, section_errors=section_errors)

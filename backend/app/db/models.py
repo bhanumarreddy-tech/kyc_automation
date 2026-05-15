@@ -5,13 +5,43 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     """Declarative base for application tables."""
+
+
+class KYCSubmissionMetadata(Base):
+    """Analyst workflow metadata persisted per submission (sign-off, notes, audit)."""
+
+    __tablename__ = "kyc_submission_metadata"
+
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("kyc_submissions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    sign_off: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    analyst_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    audit_log: Mapped[list] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    escalated_serials: Mapped[list] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
 
 
 class KYCSubmission(Base):

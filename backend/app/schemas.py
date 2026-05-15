@@ -7,7 +7,7 @@ React side (see ``src/data/kycQuestions.ts``).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -61,6 +61,17 @@ class AttachedDocument(BaseModel):
     object_key: str | None = Field(default=None, alias="objectKey")
 
 
+class PipelineSectionError(BaseModel):
+    """Per-section failure metadata when the pipeline recovers with placeholder rows."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    section_no: int = Field(alias="sectionNo")
+    phase: str
+    message: str
+    error_id: str = Field(alias="errorId")
+
+
 class ProcessResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -73,6 +84,10 @@ class ProcessResponse(BaseModel):
         alias="attachedDocuments",
     )
     reference_urls: list[str] = Field(default_factory=list, alias="referenceUrls")
+    pipeline_errors: list[PipelineSectionError] = Field(
+        default_factory=list,
+        alias="pipelineErrors",
+    )
 
 
 def history_metrics_from_rows_json(rows: list) -> tuple[int, int]:
@@ -138,3 +153,29 @@ class HistoryDetailResponse(BaseModel):
     duration_ms: int | None = Field(default=None, alias="durationMs")
     reference_urls: list[str] = Field(default_factory=list, alias="referenceUrls")
     rows: list[KYCRow]
+
+
+class SubmissionMetadataResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    submission_id: str = Field(alias="submissionId")
+    sign_off: bool = Field(alias="signOff")
+    analyst_notes: str = Field(alias="analystNotes")
+    audit_log: list[dict[str, Any]] = Field(default_factory=list, alias="auditLog")
+    escalated_serials: list[int] = Field(default_factory=list, alias="escalatedSerials")
+
+
+class SubmissionMetadataUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    sign_off: bool | None = Field(default=None, alias="signOff")
+    analyst_notes: str | None = Field(default=None, alias="analystNotes")
+    escalated_serials: list[int] | None = Field(default=None, alias="escalatedSerials")
+
+
+class AuditAppendRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    action: str
+    analyst: str | None = None
+    detail: dict[str, Any] | None = None

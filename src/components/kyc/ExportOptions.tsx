@@ -6,7 +6,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Download, FileSpreadsheet, FileText, FileJson, Archive } from "lucide-react";
+import { Download, FileSpreadsheet, FileText, FileJson, Archive, FileDown, Send } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { KYCRow } from "@/data/kycQuestions";
 import { apiUrl } from "@/lib/api";
@@ -15,6 +15,8 @@ import type { AuditLogEntry } from "@/lib/kycAnalystToolkit";
 interface ExportOptionsProps {
   companyName: string;
   rows: KYCRow[];
+  /** When set (non-empty), tabular exports use this subset (e.g. bulk-selected rows). */
+  selectedRows?: KYCRow[];
   submissionId?: string | null;
   savedAt?: string | null;
   referenceUrls?: string[];
@@ -68,6 +70,7 @@ const rowToColumns = (row: KYCRow): string[] => [
 export function ExportOptions({
   companyName,
   rows,
+  selectedRows,
   submissionId,
   savedAt,
   referenceUrls,
@@ -77,6 +80,8 @@ export function ExportOptions({
 }: ExportOptionsProps) {
   const { toast } = useToast();
   const [isExporting, setIsExporting] = useState(false);
+
+  const effectiveRows = selectedRows && selectedRows.length > 0 ? selectedRows : rows;
 
   const downloadFile = (content: string, filename: string, mimeType: string) => {
     const blob = new Blob([content], { type: mimeType });
@@ -95,7 +100,7 @@ export function ExportOptions({
       companyName: companyName.trim(),
       analystName: analystName?.trim() || undefined,
       submissionId: submissionId ?? undefined,
-      rows,
+      rows: effectiveRows,
     };
     downloadFile(
       JSON.stringify(bundle, null, 2),
@@ -106,7 +111,7 @@ export function ExportOptions({
     onAudit?.({
       action: "export_draft_snapshot",
       analyst: analystName?.trim() || undefined,
-      detail: { rowCount: rows.length, submissionId },
+      detail: { rowCount: effectiveRows.length, submissionId },
     });
   };
 
@@ -133,7 +138,7 @@ export function ExportOptions({
       savedAt: savedAt ?? undefined,
       referenceUrls: referenceUrls ?? [],
       attachments,
-      questionnaire: rows.map((row) => ({
+      questionnaire: effectiveRows.map((row) => ({
         sectionNo: row.sectionNo,
         sectionName: row.sectionName,
         serialNo: row.serialNo,
@@ -164,7 +169,7 @@ export function ExportOptions({
 
   const exportCSV = () => {
     const lines = [HEADERS.join(",")];
-    for (const row of rows) {
+    for (const row of effectiveRows) {
       lines.push(rowToColumns(row).map(csvEscape).join(","));
     }
     downloadFile(
@@ -176,7 +181,7 @@ export function ExportOptions({
     onAudit?.({
       action: "export_csv",
       analyst: analystName?.trim() || undefined,
-      detail: { rowCount: rows.length },
+      detail: { rowCount: effectiveRows.length },
     });
   };
 
@@ -192,7 +197,7 @@ export function ExportOptions({
         });
         return;
       }
-      printWindow.document.write(generatePDFHTML(companyName, rows));
+      printWindow.document.write(generatePDFHTML(companyName, effectiveRows));
       printWindow.document.close();
       printWindow.onload = () => {
         printWindow.print();
@@ -201,10 +206,128 @@ export function ExportOptions({
       onAudit?.({
         action: "export_pdf",
         analyst: analystName?.trim() || undefined,
-        detail: { rowCount: rows.length },
+        detail: { rowCount: effectiveRows.length },
       });
     } finally {
       setIsExporting(false);
+    }
+  };
+
+  const exportMemoPdf = async () => {
+    setIsExporting(true);
+    try {
+      const printWindow = window.open("", "_blank");
+      if (!printWindow) {
+        toast({
+          title: "Error",
+          description: "Please allow popups for memo export",
+          variant: "destructive",
+        });
+        return;
+      }
+      printWindow.document.write(generateMemoHTML(companyName, effectiveRows, analystName, submissionId));
+      printWindow.document.close();
+      printWindow.onload = () => printWindow.print();
+      toast({
+        title: "Executive memo ready",
+        description: "Print to PDF — one-page summary for stakeholders.",
+      });
+      onAudit?.({
+        action: "export_memo_pdf",
+        analyst: analystName?.trim() || undefined,
+        detail: { rowCount: effectiveRows.length },
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const exportZipBundle = async () => {
+    setIsExporting(true);
+    try {
+      const { default: JSZip } = await import("jszip");
+      const zip = new JSZip();
+      zip.file(
+        "README.txt",
+        [
+          "KYC automation evidence bundle (ZIP)",
+          `Company: ${companyName}`,
+          `Generated: ${new Date().toISOString()}`,
+          submissionId ? `Submission: ${submissionId}` : "",
+          "",
+          "Contains results.csv and snapshot.json.",
+        ].join("\n"),
+      );
+      const lines = [HEADERS.join(",")];
+      for (const row of effectiveRows) {
+        lines.push(rowToColumns(row).map(csvEscape).join(","));
+      }
+      zip.file("results.csv", lines.join("\n"));
+      zip.file(
+        "snapshot.json",
+        JSON.stringify(
+          { companyName, submissionId, rows: effectiveRows, exportedAt: new Date().toISOString() },
+          null,
+          2,
+        ),
+      );
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(companyName || "KYC").replace(/[^\w-]+/g, "_")}_evidence.zip`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      toast({ title: "ZIP downloaded", description: "Includes CSV and JSON snapshot." });
+      onAudit?.({
+        action: "export_zip",
+        analyst: analystName?.trim() || undefined,
+        detail: { rowCount: effectiveRows.length },
+      });
+    } catch (e) {
+      toast({
+        title: "ZIP failed",
+        description: e instanceof Error ? e.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const pushWebhook = async () => {
+    const prev = localStorage.getItem("kyc_export_webhook_url") ?? "";
+    const url = window.prompt("POST JSON body to this URL (CORS must allow the browser origin)", prev)?.trim();
+    if (!url) return;
+    localStorage.setItem("kyc_export_webhook_url", url);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event: "kyc_automation_export",
+          companyName: companyName.trim(),
+          submissionId: submissionId ?? null,
+          analystName: analystName?.trim() ?? null,
+          rowCount: effectiveRows.length,
+          rows: effectiveRows,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      toast({ title: "Webhook delivered", description: url.slice(0, 48) });
+      onAudit?.({
+        action: "webhook_push",
+        analyst: analystName?.trim() || undefined,
+        detail: { url },
+      });
+    } catch (e) {
+      toast({
+        title: "Webhook failed",
+        description: e instanceof Error ? e.message : "Network error",
+        variant: "destructive",
+      });
     }
   };
 
@@ -231,7 +354,19 @@ export function ExportOptions({
         </DropdownMenuItem>
         <DropdownMenuItem onClick={exportPDF}>
           <FileText className="h-4 w-4 mr-2" />
-          Export as PDF
+          Full table PDF
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={exportMemoPdf}>
+          <FileDown className="h-4 w-4 mr-2" />
+          Executive memo (print PDF)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={exportZipBundle}>
+          <Archive className="h-4 w-4 mr-2" />
+          Evidence ZIP (CSV + JSON)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => void pushWebhook()}>
+          <Send className="h-4 w-4 mr-2" />
+          Push JSON to webhook
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -245,6 +380,51 @@ function escapeHtml(str: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function generateMemoHTML(
+  companyName: string,
+  rows: KYCRow[],
+  analystName?: string,
+  submissionId?: string | null,
+): string {
+  const answered = rows.filter((r) => {
+    const a = r.answer.trim().toLowerCase();
+    return Boolean(a && a !== "not found");
+  }).length;
+  const validationYes = rows.filter((r) => r.validation === "Yes").length;
+  const needsReview = rows.filter((r) => r.validation !== "Yes").length;
+  const completion = rows.length ? Math.round((answered / rows.length) * 100) : 0;
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <title>KYC Memo — ${escapeHtml(companyName)}</title>
+  <style>
+    body { font-family: Georgia, serif; margin: 48px; max-width: 720px; color: #222; }
+    .brand { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: #666; }
+    h1 { font-size: 26px; margin: 8px 0 24px; }
+    .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 24px 0; }
+    .metric { border: 1px solid #ddd; padding: 12px; border-radius: 8px; }
+    .metric .v { font-size: 22px; font-weight: 700; }
+    .footer { margin-top: 40px; font-size: 11px; color: #666; }
+  </style>
+</head>
+<body>
+  <div class="brand">Tiger Analytics · KYC Automation</div>
+  <h1>${escapeHtml(companyName)}</h1>
+  <p><strong>Readiness summary</strong> — generated ${new Date().toLocaleString()}</p>
+  ${submissionId ? `<p>Submission ID: <code>${escapeHtml(submissionId)}</code></p>` : ""}
+  ${analystName?.trim() ? `<p>Analyst: ${escapeHtml(analystName.trim())}</p>` : ""}
+  <div class="metrics">
+    <div class="metric"><div>Completion</div><div class="v">${completion}%</div></div>
+    <div class="metric"><div>AI validation Yes</div><div class="v">${validationYes}/${rows.length}</div></div>
+    <div class="metric"><div>Needs review</div><div class="v">${needsReview}</div></div>
+  </div>
+  <p>This one-pager summarizes questionnaire coverage. Attach the full CSV export from the app for detailed citations.</p>
+  <div class="footer">Print this page to PDF for sharing. Confidential — internal use.</div>
+</body>
+</html>`;
 }
 
 function generatePDFHTML(companyName: string, rows: KYCRow[]): string {

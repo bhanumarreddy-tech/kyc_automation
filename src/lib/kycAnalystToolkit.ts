@@ -144,3 +144,66 @@ export function addUrlPreset(name: string, urls: string[]): UrlPreset {
 export function deleteUrlPreset(id: string): void {
   saveUrlPresets(loadUrlPresets().filter((p) => p.id !== id));
 }
+
+const COMMENT_SNIPPETS_KEY = "kyc_automation_comment_snippets_v1";
+const COMPANY_URL_PACKS_KEY = "kyc_automation_company_url_packs_v1";
+
+export type CommentSnippet = { id: string; label: string; text: string };
+export type CompanyUrlPack = { companyKey: string; urls: string[] };
+
+export function defaultCommentSnippets(): CommentSnippet[] {
+  return [
+    {
+      id: "sn-10k",
+      label: "Needs 10-K citation",
+      text: "Cite SEC Form 10-K section / exhibit; verify fiscal year.",
+    },
+    {
+      id: "sn-third",
+      label: "Third-party only",
+      text: "Answer derived from third-party sources only — request primary filing.",
+    },
+  ];
+}
+
+export function loadCommentSnippets(): CommentSnippet[] {
+  try {
+    const raw = localStorage.getItem(COMMENT_SNIPPETS_KEY);
+    if (!raw) return defaultCommentSnippets();
+    const list = JSON.parse(raw) as CommentSnippet[];
+    return Array.isArray(list) && list.length ? list : defaultCommentSnippets();
+  } catch {
+    return defaultCommentSnippets();
+  }
+}
+
+export function saveCommentSnippets(list: CommentSnippet[]): void {
+  try {
+    localStorage.setItem(COMMENT_SNIPPETS_KEY, JSON.stringify(list));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function loadCompanyUrlPacks(): CompanyUrlPack[] {
+  try {
+    const raw = localStorage.getItem(COMPANY_URL_PACKS_KEY);
+    if (!raw) return [];
+    const list = JSON.parse(raw) as CompanyUrlPack[];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveCompanyUrlPack(companyKey: string, urls: string[]): void {
+  const key = companyKey.trim().toLowerCase();
+  if (!key) return;
+  const list = loadCompanyUrlPacks().filter((p) => p.companyKey !== key);
+  list.push({ companyKey: key, urls: [...urls] });
+  try {
+    localStorage.setItem(COMPANY_URL_PACKS_KEY, JSON.stringify(list));
+  } catch {
+    /* ignore */
+  }
+}

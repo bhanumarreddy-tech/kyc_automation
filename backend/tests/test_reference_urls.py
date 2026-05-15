@@ -306,7 +306,8 @@ async def test_pipeline_merges_upload_and_url_docs(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(pipeline_mod, "answer_section", fake_answer)
     monkeypatch.setattr(pipeline_mod, "validate_section", fake_validate)
 
-    rows = await pipeline_mod.run_pipeline("Co", [], reference_urls=["https://example.com/x"])
+    outcome = await pipeline_mod.run_pipeline("Co", [], reference_urls=["https://example.com/x"])
+    rows = outcome.rows
     assert len(rows) == 64
     assert captured["docs"]
     for batch in captured["docs"]:

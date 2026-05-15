@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -29,13 +37,36 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { Upload, FileText, Home, X, ArrowLeft, Loader2, Link2, RefreshCw, ListFilter } from "lucide-react";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  Upload,
+  FileText,
+  Home,
+  X,
+  ArrowLeft,
+  Loader2,
+  Link2,
+  RefreshCw,
+  ListFilter,
+  ChevronDown,
+} from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import ProcessingView from "@/components/kyc/ProcessingView";
 import { ResultsTable } from "@/components/kyc/ResultsTable";
 import { kycQuestions, hydrateKycRows } from "@/data/kycQuestions";
 import type { KYCRow } from "@/data/kycQuestions";
 import { apiUrl } from "@/lib/api";
+import {
+  cancelProcessJob,
+  startProcessJob,
+  startRerunJob,
+  subscribeProcessJob,
+  type JobSnapshot,
+} from "@/lib/processJobApi";
 import {
   appendAuditLog,
   cloneRowsBaseline,
@@ -111,6 +142,49 @@ function formatDurationMs(ms: number | null | undefined): string {
   return `${minutes}m ${seconds}s`;
 }
 
+/** Compact disclosure control for long attachment / URL lists. */
+function MetadataCollapsible({
+  label,
+  count,
+  emptyHint,
+  children,
+}: {
+  label: string;
+  count: number;
+  emptyHint: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger
+        type="button"
+        className="flex w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 text-left text-sm shadow-sm hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <span>
+          <span className="font-medium">{label}</span>{" "}
+          <span className="text-muted-foreground">
+            {count === 0
+              ? "· none"
+              : `· ${count} ${count === 1 ? "item" : "items"}`}
+          </span>
+        </span>
+        <ChevronDown
+          className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`}
+          aria-hidden
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="space-y-2 pt-2">
+        {count === 0 ? (
+          <p className="text-sm text-muted-foreground pl-0.5">{emptyHint}</p>
+        ) : (
+          children
+        )}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 /** One URL per line; trim, drop empties, preserve first-seen order (matches backend). */
 function parseReferenceUrlsFromText(raw: string): string[] {
   const seen = new Set<string>();
@@ -132,8 +206,6 @@ interface RerunEditState {
   newFiles: File[];
 }
 
-const API_ENDPOINT = apiUrl("/api/process");
-const RERUN_ENDPOINT = apiUrl("/api/process/rerun");
 const HISTORY_LIST_ENDPOINT = apiUrl("/api/history");
 
 export default function KYCAutomation() {
@@ -171,6 +243,7 @@ export default function KYCAutomation() {
   const [rerunInFlight, setRerunInFlight] = useState(false);
   const [rerunEdit, setRerunEdit] = useState<RerunEditState | null>(null);
   const rerunFileInputRef = useRef<HTMLInputElement>(null);
+  const processAbortRef = useRef<AbortController | null>(null);
 
   const [comparisonBaseline, setComparisonBaseline] = useState<KYCRow[] | null>(null);
   const [comparisonLabel, setComparisonLabel] = useState<string | null>(null);
@@ -191,6 +264,13 @@ export default function KYCAutomation() {
   const [historyFilterNeedsReviewOnly, setHistoryFilterNeedsReviewOnly] = useState(false);
   const [historyFilterDateFrom, setHistoryFilterDateFrom] = useState("");
   const [historyFilterDateTo, setHistoryFilterDateTo] = useState("");
+
+  const [jobProgress, setJobProgress] = useState<JobSnapshot | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [pipelineSectionErrors, setPipelineSectionErrors] = useState<
+    { sectionNo: number; phase: string; message: string; errorId: string }[]
+  >([]);
+  const [serverEscalatedSerials, setServerEscalatedSerials] = useState<number[]>([]);
 
   useEffect(() => {
     const preventDefaults = (e: DragEvent) => {
@@ -352,11 +432,21 @@ export default function KYCAutomation() {
       durationMs?: number | null;
       attachedDocuments?: AttachedDocumentItem[];
       referenceUrls?: string[];
+      pipelineErrors?: { sectionNo: number; phase: string; message: string; errorId: string }[];
     },
     companyLabel: string,
   ) => {
-    setRows(hydrateKycRows(data.rows));
+    const hydrated = hydrateKycRows(data.rows);
+    setRows(hydrated);
+    setPipelineSectionErrors(data.pipelineErrors ?? []);
     setStep("results");
+
+    const answeredN = hydrated.filter((r) => {
+      const a = r.answer.trim().toLowerCase();
+      return Boolean(a && a !== "not found");
+    }).length;
+    const completionPct =
+      hydrated.length === 0 ? 0 : Math.round((answeredN / hydrated.length) * 100);
 
     setLastSubmissionMeta({
       submissionId:
@@ -393,11 +483,20 @@ export default function KYCAutomation() {
         ? ` Run time ${formatDurationMs(data.durationMs)}.`
         : "";
 
+    const pe = data.pipelineErrors?.length ?? 0;
     toast({
-      title: "Processing complete",
-      description: data.submissionId
-        ? `KYC questionnaire populated for ${companyLabel.trim()}. Saved to history.${durationLabel}`
-        : `KYC questionnaire populated for ${companyLabel.trim()}.${durationLabel}`,
+      title:
+        completionPct === 100 ? "Processing complete — full coverage" : "Processing complete",
+      description:
+        pe > 0
+          ? `${pe} section(s) used recovery placeholders — review the alert below. ${
+              data.submissionId
+                ? `Saved to history for ${companyLabel.trim()}.${durationLabel}`
+                : durationLabel.trim()
+            }`
+          : data.submissionId
+            ? `KYC questionnaire populated for ${companyLabel.trim()}. Saved to history.${durationLabel}`
+            : `KYC questionnaire populated for ${companyLabel.trim()}.${durationLabel}`,
     });
   };
 
@@ -414,32 +513,39 @@ export default function KYCAutomation() {
     setHistoryRunMeta(null);
     setCompletedRunDownloads(null);
     setStep("processing");
+    setJobProgress(null);
+    processAbortRef.current?.abort();
+    processAbortRef.current = new AbortController();
 
     try {
-      const res = await fetch(RERUN_ENDPOINT, {
-        method: "POST",
-        body: formData,
-      });
+      const jobId = await startRerunJob(formData);
+      setActiveJobId(jobId);
+      const data = await subscribeProcessJob(
+        jobId,
+        (snap) => setJobProgress(snap),
+        { signal: processAbortRef.current.signal },
+      );
 
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Backend error ${res.status}: ${text || res.statusText}`);
-      }
-
-      const data = (await res.json()) as {
-        rows: KYCRow[];
-        submissionId?: string;
-        savedAt?: string | null;
-        durationMs?: number | null;
-        attachedDocuments?: AttachedDocumentItem[];
-        referenceUrls?: string[];
-      };
       if (!data?.rows || !Array.isArray(data.rows)) {
         throw new Error("Backend returned an invalid response");
       }
 
-      finalizeSuccessfulProcess(data, companyLabel.trim());
+      finalizeSuccessfulProcess(
+        {
+          rows: data.rows,
+          submissionId: data.submissionId ?? undefined,
+          savedAt: data.savedAt ?? null,
+          durationMs: data.durationMs ?? null,
+          attachedDocuments: data.attachedDocuments,
+          referenceUrls: data.referenceUrls,
+          pipelineErrors: data.pipelineErrors,
+        },
+        companyLabel.trim(),
+      );
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
       console.error("Rerun error:", error);
       toast({
         title: "Rerun failed",
@@ -451,6 +557,8 @@ export default function KYCAutomation() {
     } finally {
       setRerunInFlight(false);
       setProcessingCounts(null);
+      setActiveJobId(null);
+      setJobProgress(null);
     }
   };
 
@@ -507,6 +615,7 @@ export default function KYCAutomation() {
 
   const closeHistoryDetail = () => {
     setHistoryDetailId(null);
+    setServerEscalatedSerials([]);
     setHistoryRunMeta(null);
     setHistoryDetailCreatedAt(null);
     setRows([]);
@@ -553,6 +662,22 @@ export default function KYCAutomation() {
         referenceUrls: Array.isArray(data.referenceUrls) ? data.referenceUrls : [],
       });
       setHistoryDetailId(submissionId);
+      try {
+        const mres = await fetch(apiUrl(`/api/history/${encodeURIComponent(submissionId)}/metadata`));
+        if (mres.ok) {
+          const meta = (await mres.json()) as { escalatedSerials?: unknown[] };
+          const esc = Array.isArray(meta.escalatedSerials)
+            ? meta.escalatedSerials
+                .map((x) => Number(x))
+                .filter((n) => Number.isFinite(n) && n >= 1 && n <= 64)
+            : [];
+          setServerEscalatedSerials(esc);
+        } else {
+          setServerEscalatedSerials([]);
+        }
+      } catch {
+        setServerEscalatedSerials([]);
+      }
     } catch (e) {
       console.error(e);
       toast({
@@ -596,6 +721,9 @@ export default function KYCAutomation() {
     setProcessingCounts({ files: files.length, urls: refUrls.length });
     setStep("processing");
     setCompletedRunDownloads(null);
+    setJobProgress(null);
+    processAbortRef.current?.abort();
+    processAbortRef.current = new AbortController();
 
     try {
       const formData = new FormData();
@@ -607,30 +735,30 @@ export default function KYCAutomation() {
         formData.append("reference_urls", u);
       }
 
-      const res = await fetch(API_ENDPOINT, {
-        method: "POST",
-        body: formData,
-      });
+      const jobId = await startProcessJob(formData);
+      setActiveJobId(jobId);
+      const data = await subscribeProcessJob(
+        jobId,
+        (snap) => setJobProgress(snap),
+        { signal: processAbortRef.current.signal },
+      );
 
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Backend error ${res.status}: ${text || res.statusText}`);
-      }
-
-      const data = (await res.json()) as {
-        rows: KYCRow[];
-        submissionId?: string;
-        savedAt?: string | null;
-        durationMs?: number | null;
-        attachedDocuments?: AttachedDocumentItem[];
-        referenceUrls?: string[];
-      };
-      if (!data?.rows || !Array.isArray(data.rows)) {
-        throw new Error("Backend returned an invalid response");
-      }
-
-      finalizeSuccessfulProcess(data, companyName.trim());
+      finalizeSuccessfulProcess(
+        {
+          rows: data.rows,
+          submissionId: data.submissionId ?? undefined,
+          savedAt: data.savedAt ?? null,
+          durationMs: data.durationMs ?? null,
+          attachedDocuments: data.attachedDocuments,
+          referenceUrls: data.referenceUrls,
+          pipelineErrors: data.pipelineErrors,
+        },
+        companyName.trim(),
+      );
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
       console.error("Processing error:", error);
       toast({
         title: "Processing failed",
@@ -641,10 +769,13 @@ export default function KYCAutomation() {
       setLastRunMeta(null);
     } finally {
       setProcessingCounts(null);
+      setActiveJobId(null);
+      setJobProgress(null);
     }
   };
 
   const handleReset = () => {
+    processAbortRef.current?.abort();
     setStep("upload");
     setCompanyName("");
     setFiles([]);
@@ -659,6 +790,15 @@ export default function KYCAutomation() {
     setProcessingCounts(null);
     setRerunInFlight(false);
     setRerunEdit(null);
+    setPipelineSectionErrors([]);
+    setJobProgress(null);
+    setActiveJobId(null);
+    setServerEscalatedSerials([]);
+  };
+
+  const handleCancelActiveJob = () => {
+    if (activeJobId) void cancelProcessJob(activeJobId);
+    processAbortRef.current?.abort();
   };
 
   const handleRowChange = (serialNo: number, updates: Partial<KYCRow>) => {
@@ -985,11 +1125,37 @@ export default function KYCAutomation() {
             referenceUrlCount={
               processingCounts?.urls ?? parseReferenceUrlsFromText(referenceUrlsText).length
             }
+            jobId={activeJobId}
+            phase={jobProgress?.phase ?? ""}
+            detail={jobProgress?.detail ?? ""}
+            answerCompleted={jobProgress?.answerCompleted ?? 0}
+            answerTotal={jobProgress?.answerTotal ?? 8}
+            validateCompleted={jobProgress?.validateCompleted ?? 0}
+            validateTotal={jobProgress?.validateTotal ?? 8}
+            onCancelRequest={handleCancelActiveJob}
           />
             )}
 
             {step === "results" && (
           <div className="space-y-4">
+            {pipelineSectionErrors.length > 0 && (
+              <Alert variant="destructive">
+                <AlertTitle>Partial section recovery</AlertTitle>
+                <AlertDescription>
+                  <p className="mb-2 text-sm">
+                    One or more sections hit an API error; placeholder text may appear for those
+                    rows. Use the error id when reporting issues.
+                  </p>
+                  <ul className="list-disc pl-4 space-y-1 text-sm font-mono">
+                    {pipelineSectionErrors.map((e) => (
+                      <li key={`${e.errorId}-${e.sectionNo}-${e.phase}`}>
+                        Section {e.sectionNo} ({e.phase}): {e.message} — ref {e.errorId}
+                      </li>
+                    ))}
+                  </ul>
+                </AlertDescription>
+              </Alert>
+            )}
             {lastRunMeta && (
               <div className="rounded-md border bg-muted/30 p-4 text-sm space-y-3">
                 <div className="flex flex-wrap gap-x-6 gap-y-1">
@@ -1002,87 +1168,92 @@ export default function KYCAutomation() {
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <div className="text-muted-foreground text-xs uppercase tracking-wide">
-                    Attached documents
-                  </div>
-                  {files.length > 0 ? (
-                    <ul className="space-y-2">
-                      {files.map((f, idx) => (
-                        <li
-                          key={`${f.name}-${idx}`}
-                          className="flex flex-wrap items-center gap-x-3 gap-y-2 p-2 bg-background rounded-md border"
-                        >
-                          <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-                          <span title={f.name} className="flex-1 min-w-0 truncate font-medium">
-                            {f.name}
-                          </span>
-                          <span className="text-xs text-muted-foreground whitespace-nowrap">
-                            {(f.size / 1024 / 1024).toFixed(2)} MB
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : completedRunDownloads && completedRunDownloads.documents.length > 0 ? (
-                    <ul className="space-y-2">
-                      {completedRunDownloads.documents.map((doc, idx) => (
-                        <li
-                          key={`${doc.objectKey ?? doc.filename}-${idx}`}
-                          className="flex flex-wrap items-center gap-2 p-2 bg-background rounded-md border"
-                        >
-                          <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-                          <AttachmentNameLink
-                            submissionId={completedRunDownloads.submissionId}
-                            doc={doc}
-                            className="flex-1 min-w-0 truncate text-left font-medium"
-                          />
-                          {typeof doc.sizeBytes === "number" && doc.sizeBytes >= 0 && (
-                            <span className="text-xs text-muted-foreground whitespace-nowrap">
-                              {(doc.sizeBytes / 1024 / 1024).toFixed(2)} MB
-                            </span>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-muted-foreground">No documents were uploaded.</p>
-                  )}
-                </div>
-                <div className="space-y-2">
-                  <div className="text-muted-foreground text-xs uppercase tracking-wide">
-                    Reference URLs
-                  </div>
-                  {lastRunMeta.referenceUrls.length === 0 ? (
-                    <p className="text-muted-foreground">None.</p>
-                  ) : (
-                    <ul className="space-y-2">
-                      {lastRunMeta.referenceUrls.map((url, idx) => (
-                        <li
-                          key={`${url}-${idx}`}
-                          className="flex flex-wrap items-start gap-x-3 gap-y-1 p-2 bg-background rounded-md border"
-                        >
-                          <Link2 className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-                          <a
-                            href={url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-primary underline break-all font-medium flex-1 min-w-0"
+                  <MetadataCollapsible
+                    label="Attached documents"
+                    count={
+                      files.length > 0
+                        ? files.length
+                        : completedRunDownloads?.documents.length ?? 0
+                    }
+                    emptyHint="No documents were uploaded for this run."
+                  >
+                    {files.length > 0 ? (
+                      <ul className="space-y-2">
+                        {files.map((f, idx) => (
+                          <li
+                            key={`${f.name}-${idx}`}
+                            className="flex flex-wrap items-center gap-x-3 gap-y-2 p-2 bg-background rounded-md border"
                           >
-                            {url}
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+                            <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                            <span title={f.name} className="flex-1 min-w-0 truncate font-medium">
+                              {f.name}
+                            </span>
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">
+                              {(f.size / 1024 / 1024).toFixed(2)} MB
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : completedRunDownloads && completedRunDownloads.documents.length > 0 ? (
+                      <ul className="space-y-2">
+                        {completedRunDownloads.documents.map((doc, idx) => (
+                          <li
+                            key={`${doc.objectKey ?? doc.filename}-${idx}`}
+                            className="flex flex-wrap items-center gap-2 p-2 bg-background rounded-md border"
+                          >
+                            <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                            <AttachmentNameLink
+                              submissionId={completedRunDownloads.submissionId}
+                              doc={doc}
+                              className="flex-1 min-w-0 truncate text-left font-medium"
+                            />
+                            {typeof doc.sizeBytes === "number" && doc.sizeBytes >= 0 && (
+                              <span className="text-xs text-muted-foreground whitespace-nowrap">
+                                {(doc.sizeBytes / 1024 / 1024).toFixed(2)} MB
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </MetadataCollapsible>
+                  <MetadataCollapsible
+                    label="Reference URLs"
+                    count={lastRunMeta.referenceUrls.length}
+                    emptyHint="No reference URLs were provided."
+                  >
+                    {lastRunMeta.referenceUrls.length > 0 ? (
+                      <ul className="space-y-2">
+                        {lastRunMeta.referenceUrls.map((url, idx) => (
+                          <li
+                            key={`${url}-${idx}`}
+                            className="flex flex-wrap items-start gap-x-3 gap-y-1 p-2 bg-background rounded-md border"
+                          >
+                            <Link2 className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary underline break-all font-medium flex-1 min-w-0"
+                            >
+                              {url}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </MetadataCollapsible>
                 </div>
               </div>
             )}
             {completedRunDownloads &&
               completedRunDownloads.documents.length > 0 &&
               files.length > 0 && (
-              <div className="rounded-md border bg-muted/30 p-4 text-sm space-y-2">
-                <div className="text-muted-foreground text-xs uppercase tracking-wide">
-                  Stored uploads (click to download)
-                </div>
+              <MetadataCollapsible
+                label="Stored uploads"
+                count={completedRunDownloads.documents.length}
+                emptyHint=""
+              >
                 <ul className="space-y-2">
                   {completedRunDownloads.documents.map((doc, idx) => (
                     <li
@@ -1103,7 +1274,7 @@ export default function KYCAutomation() {
                     </li>
                   ))}
                 </ul>
-              </div>
+              </MetadataCollapsible>
             )}
             <ResultsTable
               companyName={companyName}
@@ -1133,6 +1304,7 @@ export default function KYCAutomation() {
                 setSignOffChecked(v);
               }}
               onAudit={recordAudit}
+              initialEscalatedSerials={serverEscalatedSerials}
             />
           </div>
             )}
@@ -1180,60 +1352,60 @@ export default function KYCAutomation() {
                       </div>
                     </div>
                     <div className="space-y-2">
-                      <div className="text-muted-foreground text-xs uppercase tracking-wide">
-                        Attached documents
-                      </div>
-                      {historyRunMeta.attachedDocuments.length === 0 ? (
-                        <p className="text-muted-foreground">No documents were uploaded.</p>
-                      ) : (
-                        <ul className="space-y-2">
-                          {historyRunMeta.attachedDocuments.map((doc, idx) => (
-                            <li
-                              key={`${doc.filename}-${idx}`}
-                              className="flex flex-wrap items-center gap-x-3 gap-y-2 p-2 bg-background rounded-md border"
-                            >
-                              <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-                              <AttachmentNameLink
-                                submissionId={historyDetailId}
-                                doc={doc}
-                                className="flex-1 min-w-0 truncate text-left"
-                              />
-                              {typeof doc.sizeBytes === "number" && doc.sizeBytes >= 0 && (
-                                <span className="text-xs text-muted-foreground whitespace-nowrap">
-                                  {(doc.sizeBytes / 1024 / 1024).toFixed(2)} MB
-                                </span>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                    <div className="space-y-2">
-                      <div className="text-muted-foreground text-xs uppercase tracking-wide">
-                        Reference URLs
-                      </div>
-                      {historyRunMeta.referenceUrls.length === 0 ? (
-                        <p className="text-muted-foreground">None.</p>
-                      ) : (
-                        <ul className="space-y-2">
-                          {historyRunMeta.referenceUrls.map((url, idx) => (
-                            <li
-                              key={`${url}-${idx}`}
-                              className="flex flex-wrap items-start gap-x-3 gap-y-1 p-2 bg-background rounded-md border"
-                            >
-                              <Link2 className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-                              <a
-                                href={url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-primary underline break-all font-medium flex-1 min-w-0"
+                      <MetadataCollapsible
+                        label="Attached documents"
+                        count={historyRunMeta.attachedDocuments.length}
+                        emptyHint="No documents were uploaded."
+                      >
+                        {historyRunMeta.attachedDocuments.length > 0 ? (
+                          <ul className="space-y-2">
+                            {historyRunMeta.attachedDocuments.map((doc, idx) => (
+                              <li
+                                key={`${doc.filename}-${idx}`}
+                                className="flex flex-wrap items-center gap-x-3 gap-y-2 p-2 bg-background rounded-md border"
                               >
-                                {url}
-                              </a>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
+                                <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                                <AttachmentNameLink
+                                  submissionId={historyDetailId}
+                                  doc={doc}
+                                  className="flex-1 min-w-0 truncate text-left"
+                                />
+                                {typeof doc.sizeBytes === "number" && doc.sizeBytes >= 0 && (
+                                  <span className="text-xs text-muted-foreground whitespace-nowrap">
+                                    {(doc.sizeBytes / 1024 / 1024).toFixed(2)} MB
+                                  </span>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </MetadataCollapsible>
+                      <MetadataCollapsible
+                        label="Reference URLs"
+                        count={historyRunMeta.referenceUrls.length}
+                        emptyHint="None."
+                      >
+                        {historyRunMeta.referenceUrls.length > 0 ? (
+                          <ul className="space-y-2">
+                            {historyRunMeta.referenceUrls.map((url, idx) => (
+                              <li
+                                key={`${url}-${idx}`}
+                                className="flex flex-wrap items-start gap-x-3 gap-y-1 p-2 bg-background rounded-md border"
+                              >
+                                <Link2 className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                                <a
+                                  href={url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-primary underline break-all font-medium flex-1 min-w-0"
+                                >
+                                  {url}
+                                </a>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </MetadataCollapsible>
                     </div>
                   </div>
                 )}
@@ -1266,6 +1438,7 @@ export default function KYCAutomation() {
                     setSignOffChecked(v);
                   }}
                   onAudit={recordAudit}
+                  initialEscalatedSerials={serverEscalatedSerials}
                 />
               </>
             )}

@@ -13,6 +13,7 @@ import app.routes.process as process_mod
 from app.config import get_settings
 from app.questions import KYC_QUESTIONS
 from app.schemas import AttachedDocument, KYCRow
+from app.services.pipeline import RunPipelineOutcome
 
 
 def _clear_settings_cache() -> None:
@@ -148,11 +149,11 @@ def test_rerun_multipart_happy_path_passes_urls_and_uploads(
             for i, t in enumerate(uploads)
         ]
 
-    async def fake_pipeline(company: str, uploads, reference_urls=None):
+    async def fake_pipeline(company: str, uploads, reference_urls=None, **kwargs):
         captured["company"] = company
         captured["pipeline_uploads"] = uploads
         captured["pipeline_urls"] = list(reference_urls or [])
-        return _minimal_rows()
+        return RunPipelineOutcome(rows=_minimal_rows(), section_errors=[])
 
     class FakeSaved:
         def __init__(self) -> None:
