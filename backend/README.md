@@ -56,5 +56,5 @@ Secrets in `.env` (see [.env.example](.env.example)):
 | Variable | Notes |
 |----------|-------|
 | `GEMINI_API_KEY` | _(required)_ Google AI Studio API key (`GOOGLE_API_KEY` alias) |
-| `DATABASE_PASSWORD` | Optional Postgres password for history |
+| `DATABASE_URL` or `DATABASE_PASSWORD` + `PG*` | Postgres (AWS RDS defaults in `config.py`) |
 | `BLOB_READ_WRITE_TOKEN`, optional `BLOB_STORE_ID` | Required when uploads use Vercel Blob |

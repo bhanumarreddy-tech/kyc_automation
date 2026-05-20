@@ -23,8 +23,8 @@ _async_session_maker: async_sessionmaker[AsyncSession] | None = None
 def _asyncpg_safe_url(url: str) -> tuple[str, dict]:
     """asyncpg rejects ``sslmode`` as a keyword; strip it from the query string.
 
-    When ``sslmode=require`` was present, enable TLS. Managed hosts (e.g. Railway's
-    public Postgres proxy) may use intermediates that fail default verification from
+    When ``sslmode=require`` was present, enable TLS. Managed hosts (e.g. AWS RDS)
+    may use intermediates that fail default verification from
     a Windows dev machine; use a permissive TLS context only in that ``require`` case.
     """
 

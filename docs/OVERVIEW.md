@@ -224,7 +224,7 @@ Uses Gemini via `narrative_summarizer.py`.
 
 ### PostgreSQL (optional but required for full features)
 
-Async SQLAlchemy (`app/db/session.py`) connects when `DATABASE_PASSWORD` (or equivalent env vars) is set. Tables:
+Async SQLAlchemy (`app/db/session.py`) connects when `DATABASE_URL` or `DATABASE_PASSWORD` (with `PG*` host settings) is set. Defaults target AWS RDS (`aws-apg-erin-house`); override via `PGHOST`, `PGPORT`, `PGUSER`, `PGDATABASE`, `PGSSLMODE`. Tables:
 
 | Table | Purpose |
 |-------|---------|
@@ -298,7 +298,7 @@ Browser  →  nginx (frontend container, :8080)
 
 Backend (FastAPI/Uvicorn, :8000)
   ├── Gemini API
-  ├── Postgres (e.g. Railway)
+  ├── Postgres (AWS RDS via Vercel integration)
   └── Vercel Blob object storage
 ```
 

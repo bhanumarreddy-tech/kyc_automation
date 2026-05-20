@@ -53,7 +53,14 @@ class _FakeSessionMaker:
 @pytest.fixture
 def rerun_client(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-rerun-key")
-    monkeypatch.delenv("DATABASE_URL", raising=False)
+    for name in (
+        "DATABASE_URL",
+        "POSTGRES_URL",
+        "DATABASE_PASSWORD",
+        "POSTGRES_PASSWORD",
+        "PGPASSWORD",
+    ):
+        monkeypatch.delenv(name, raising=False)
     _clear_settings_cache()
 
     @dataclass

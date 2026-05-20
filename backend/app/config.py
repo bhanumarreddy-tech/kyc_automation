@@ -114,23 +114,22 @@ ANSWER_SOURCES_DOMAIN_PRIORITY_SUFFIXES: tuple[str, ...] = (
 )
 
 
-# Railway Postgres — non-secret connection defaults (match Railway Postgres plugin outputs).
-# Password comes only from env (DATABASE_PASSWORD / POSTGRES_PASSWORD / PGPASSWORD).
-RAILWAY_PG_USER = "postgres"
-RAILWAY_PG_DATABASE = "railway"
-RAILWAY_PG_PUBLIC_HOST = "yamabiko.proxy.rlwy.net"
-RAILWAY_PG_PUBLIC_PORT = 47180
-RAILWAY_PG_INTERNAL_HOST = "postgres.railway.internal"
-RAILWAY_PG_INTERNAL_PORT = 5432
+# AWS RDS (Vercel Postgres integration) — non-secret defaults; override via PG* env vars.
+DEFAULT_PG_HOST = (
+    "aws-apg-erin-house.cluster-cifq6cg8gcxc.us-east-1.rds.amazonaws.com"
+)
+DEFAULT_PG_PORT = 5432
+DEFAULT_PG_USER = "postgres"
+DEFAULT_PG_DATABASE = "postgres"
+DEFAULT_PG_SSLMODE = "require"
 
 
-def _running_on_railway() -> bool:
-    """Prefer internal TCP when the API itself is deployed on Railway."""
-    return bool(
-        os.environ.get("RAILWAY_ENVIRONMENT", "").strip()
-        or os.environ.get("RAILWAY_PROJECT_ID", "").strip()
-        or os.environ.get("RAILWAY_SERVICE_ID", "").strip()
-    )
+def _env_first(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _postgres_password() -> str:
@@ -163,26 +162,32 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _resolve_database_url() -> str | None:
-    """Build async Postgres URL from password env vars + hardcoded Railway endpoints."""
+    """Resolve Postgres URL: DATABASE_URL, then PG* vars + password, else disabled."""
+    direct = _env_first("DATABASE_URL", "POSTGRES_URL")
+    if direct:
+        return direct
+
     password = _postgres_password()
     if not password:
         return None
 
-    user_q = quote_plus(RAILWAY_PG_USER)
+    host = _env_first("PGHOST", "POSTGRES_HOST") or DEFAULT_PG_HOST
+    port_raw = _env_first("PGPORT", "POSTGRES_PORT") or str(DEFAULT_PG_PORT)
+    user = _env_first("PGUSER", "POSTGRES_USER") or DEFAULT_PG_USER
+    database = _env_first("PGDATABASE", "POSTGRES_DATABASE") or DEFAULT_PG_DATABASE
+    sslmode = _env_first("PGSSLMODE") or DEFAULT_PG_SSLMODE
+
+    try:
+        port = int(port_raw)
+    except ValueError:
+        port = DEFAULT_PG_PORT
+
+    user_q = quote_plus(user)
     pwd_q = quote_plus(password)
-
-    if _running_on_railway():
-        host = RAILWAY_PG_INTERNAL_HOST
-        port = RAILWAY_PG_INTERNAL_PORT
-        suffix = ""
-    else:
-        host = RAILWAY_PG_PUBLIC_HOST
-        port = RAILWAY_PG_PUBLIC_PORT
-        suffix = "?sslmode=require"
-
-    return (
-        f"postgresql://{user_q}:{pwd_q}@{host}:{port}/{RAILWAY_PG_DATABASE}{suffix}"
-    )
+    base = f"postgresql://{user_q}:{pwd_q}@{host}:{port}/{database}"
+    if sslmode:
+        return f"{base}?sslmode={sslmode}"
+    return base
 
 
 @dataclass(frozen=True)
