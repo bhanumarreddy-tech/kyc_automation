@@ -61,7 +61,7 @@ def rerun_client(monkeypatch: pytest.MonkeyPatch):
         gemini_api_key: str = "test-rerun-key"
         reference_url_max_per_request: int = 20
 
-        def s3_ready(self) -> bool:
+        def blob_ready(self) -> bool:
             return True
 
     monkeypatch.setattr(process_mod, "get_settings", lambda: FakeSettings())

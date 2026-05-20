@@ -6,7 +6,7 @@ import random
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import Response
 
 from app.config import get_settings
 from app.db.session import db_session_maker
@@ -28,7 +28,7 @@ from app.schemas import (
     attached_documents_from_stored,
     history_metrics_from_rows_json,
 )
-from app.services.s3_storage import key_belongs_to_submission, presigned_download_url
+from app.services.blob_storage import fetch_attachment_download, key_belongs_to_submission
 
 router = APIRouter(prefix="/api", tags=["history"])
 
@@ -113,7 +113,7 @@ async def download_submission_attachment(
     submission_id: str,
     object_key: str = Query(..., min_length=1, alias="objectKey"),
 ):
-    """Authorized redirect to a short-lived HTTPS URL served by object storage."""
+    """Authorized download of a private blob (streamed through the API)."""
     try:
         uid = UUID(submission_id)
     except ValueError:
@@ -123,7 +123,7 @@ async def download_submission_attachment(
         raise HTTPException(status_code=400, detail="Invalid attachment key") from None
 
     settings = get_settings()
-    if not settings.s3_ready():
+    if not settings.blob_ready():
         raise HTTPException(status_code=503, detail="Object storage is not configured")
 
     maker = db_session_maker()
@@ -147,14 +147,26 @@ async def download_submission_attachment(
 
     filename = match.filename or "download"
     try:
-        url = presigned_download_url(settings, object_key=object_key, filename=filename)
+        blob = await fetch_attachment_download(
+            settings, object_key=object_key, filename=filename
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Attachment not found in storage") from None
     except Exception as exc:  # pragma: no cover — provider-specific
         raise HTTPException(
             status_code=502,
             detail=f"Could not prepare download ({exc.__class__.__name__})",
         ) from exc
 
-    return RedirectResponse(url=url, status_code=302)
+    return Response(
+        content=blob.content,
+        media_type=blob.content_type,
+        headers={
+            "Content-Disposition": blob.content_disposition,
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 def _meta_to_response(submission_id: str, row) -> SubmissionMetadataResponse:

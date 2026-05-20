@@ -57,4 +57,4 @@ Secrets in `.env` (see [.env.example](.env.example)):
 |----------|-------|
 | `GEMINI_API_KEY` | _(required)_ Google AI Studio API key (`GOOGLE_API_KEY` alias) |
 | `DATABASE_PASSWORD` | Optional Postgres password for history |
-| `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Required when uploads use object storage |
+| `BLOB_READ_WRITE_TOKEN`, optional `BLOB_STORE_ID` | Required when uploads use Vercel Blob |

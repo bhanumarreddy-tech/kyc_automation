@@ -211,11 +211,8 @@ class Settings:
     enable_prompt_caching: bool = ENABLE_PROMPT_CACHING
     overload_extra_attempts: int = GEMINI_OVERLOAD_EXTRA_ATTEMPTS
     overload_base_delay_seconds: float = GEMINI_OVERLOAD_BASE_DELAY_SECONDS
-    s3_endpoint_url: str | None = None
-    s3_region: str = "us-east-1"
-    s3_bucket: str | None = None
-    s3_access_key_id: str | None = None
-    s3_secret_access_key: str | None = None
+    blob_read_write_token: str | None = None
+    blob_store_id: str | None = None
     reference_url_max_per_request: int = REFERENCE_URL_MAX_PER_REQUEST
     reference_url_max_response_bytes: int = REFERENCE_URL_MAX_RESPONSE_BYTES
     reference_url_fetch_timeout_seconds: float = REFERENCE_URL_FETCH_TIMEOUT_SECONDS
@@ -233,13 +230,8 @@ class Settings:
         ANSWER_SOURCES_DOMAIN_PRIORITY_SUFFIXES
     )
 
-    def s3_ready(self) -> bool:
-        return bool(
-            self.s3_endpoint_url
-            and self.s3_bucket
-            and self.s3_access_key_id
-            and self.s3_secret_access_key
-        )
+    def blob_ready(self) -> bool:
+        return bool(self.blob_read_write_token)
 
 
 @lru_cache(maxsize=1)
@@ -250,16 +242,8 @@ def get_settings() -> Settings:
     )
     database_url = _resolve_database_url()
 
-    s3_endpoint = os.environ.get("S3_ENDPOINT_URL", "").strip() or None
-    s3_region_raw = os.environ.get("S3_REGION", "").strip().lower()
-    s3_region = (
-        os.environ.get("S3_REGION", "").strip()
-        if s3_region_raw and s3_region_raw != "auto"
-        else "us-east-1"
-    )
-    s3_bucket = os.environ.get("S3_BUCKET", "").strip() or None
-    s3_access = os.environ.get("S3_ACCESS_KEY_ID", "").strip() or None
-    s3_secret = os.environ.get("S3_SECRET_ACCESS_KEY", "").strip() or None
+    blob_token = os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip() or None
+    blob_store_id = os.environ.get("BLOB_STORE_ID", "").strip() or None
 
     ref_contact = (
         os.environ.get("REFERENCE_URL_FETCH_CONTACT", "").strip()
@@ -298,11 +282,8 @@ def get_settings() -> Settings:
         enable_prompt_caching=ENABLE_PROMPT_CACHING,
         overload_extra_attempts=GEMINI_OVERLOAD_EXTRA_ATTEMPTS,
         overload_base_delay_seconds=GEMINI_OVERLOAD_BASE_DELAY_SECONDS,
-        s3_endpoint_url=s3_endpoint,
-        s3_region=s3_region if s3_region else "us-east-1",
-        s3_bucket=s3_bucket,
-        s3_access_key_id=s3_access,
-        s3_secret_access_key=s3_secret,
+        blob_read_write_token=blob_token,
+        blob_store_id=blob_store_id,
         reference_url_max_per_request=REFERENCE_URL_MAX_PER_REQUEST,
         reference_url_max_response_bytes=REFERENCE_URL_MAX_RESPONSE_BYTES,
         reference_url_fetch_timeout_seconds=REFERENCE_URL_FETCH_TIMEOUT_SECONDS,

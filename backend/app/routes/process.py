@@ -36,7 +36,7 @@ from app.services.reference_urls import (
     normalize_reference_urls,
     validate_reference_urls_for_request,
 )
-from app.services.s3_storage import get_object_bytes, upload_submission_files
+from app.services.blob_storage import get_object_bytes, upload_submission_files
 
 logger = logging.getLogger(__name__)
 
@@ -161,13 +161,12 @@ async def process_kyc(
     await _reject_invalid_intake_token(maker, intake_token)
 
     if uploads:
-        if not settings.s3_ready():
+        if not settings.blob_ready():
             raise HTTPException(
                 status_code=503,
                 detail=(
                     "Object storage is not configured. "
-                    "Set S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY_ID, and "
-                    "S3_SECRET_ACCESS_KEY (and optionally S3_REGION)."
+                    "Set BLOB_READ_WRITE_TOKEN (and optionally BLOB_STORE_ID)."
                 ),
             )
         if maker is None:
@@ -320,13 +319,12 @@ async def rerun_process_kyc(
     uploads: list[tuple[str, bytes, str]] = []
 
     if retain_keys:
-        if not settings.s3_ready():
+        if not settings.blob_ready():
             raise HTTPException(
                 status_code=503,
                 detail=(
                     "Object storage is not configured. "
-                    "Set S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY_ID, and "
-                    "S3_SECRET_ACCESS_KEY (and optionally S3_REGION)."
+                    "Set BLOB_READ_WRITE_TOKEN (and optionally BLOB_STORE_ID)."
                 ),
             )
         for key in retain_keys:
@@ -357,13 +355,12 @@ async def rerun_process_kyc(
     attached_documents: list[AttachedDocument] = []
 
     if uploads:
-        if not settings.s3_ready():
+        if not settings.blob_ready():
             raise HTTPException(
                 status_code=503,
                 detail=(
                     "Object storage is not configured. "
-                    "Set S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY_ID, and "
-                    "S3_SECRET_ACCESS_KEY (and optionally S3_REGION)."
+                    "Set BLOB_READ_WRITE_TOKEN (and optionally BLOB_STORE_ID)."
                 ),
             )
         attached_documents = await upload_submission_files(
@@ -449,13 +446,12 @@ async def process_kyc_async(
     attached_documents: list[AttachedDocument] = []
 
     if uploads:
-        if not settings.s3_ready():
+        if not settings.blob_ready():
             raise HTTPException(
                 status_code=503,
                 detail=(
                     "Object storage is not configured. "
-                    "Set S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY_ID, and "
-                    "S3_SECRET_ACCESS_KEY (and optionally S3_REGION)."
+                    "Set BLOB_READ_WRITE_TOKEN (and optionally BLOB_STORE_ID)."
                 ),
             )
         if maker is None:
@@ -599,13 +595,12 @@ async def rerun_process_kyc_async(
     uploads: list[tuple[str, bytes, str]] = []
 
     if retain_keys:
-        if not settings.s3_ready():
+        if not settings.blob_ready():
             raise HTTPException(
                 status_code=503,
                 detail=(
                     "Object storage is not configured. "
-                    "Set S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY_ID, and "
-                    "S3_SECRET_ACCESS_KEY (and optionally S3_REGION)."
+                    "Set BLOB_READ_WRITE_TOKEN (and optionally BLOB_STORE_ID)."
                 ),
             )
         for key in retain_keys:
@@ -629,13 +624,12 @@ async def rerun_process_kyc_async(
     attached_documents: list[AttachedDocument] = []
 
     if uploads:
-        if not settings.s3_ready():
+        if not settings.blob_ready():
             raise HTTPException(
                 status_code=503,
                 detail=(
                     "Object storage is not configured. "
-                    "Set S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY_ID, and "
-                    "S3_SECRET_ACCESS_KEY (and optionally S3_REGION)."
+                    "Set BLOB_READ_WRITE_TOKEN (and optionally BLOB_STORE_ID)."
                 ),
             )
         attached_documents = await upload_submission_files(

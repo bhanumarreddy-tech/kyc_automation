@@ -64,7 +64,7 @@ The backend is a **single FastAPI service** (`backend/app/main.py`) deployed wit
 │                      sec_filings_hub, kyc_intelligence, …   │
 ├─────────────────────────────────────────────────────────────┤
 │  Data layer          app/db/ (SQLAlchemy async + Postgres)  │
-│                      app/services/s3_storage.py (S3)        │
+│                      app/services/blob_storage.py (Blob)    │
 ├─────────────────────────────────────────────────────────────┤
 │  External APIs       Google Gemini (google-genai)           │
 │                      SEC EDGAR / data.sec.gov               │
@@ -83,7 +83,7 @@ The backend is a **single FastAPI service** (`backend/app/main.py`) deployed wit
 
 Configuration is split intentionally:
 
-- **Secrets** (API keys, DB password, S3 credentials) come from environment variables / `.env`.
+- **Secrets** (API keys, DB password, Blob token) come from environment variables / `.env`.
 - **Tuning** (model IDs, concurrency, validation limits, CORS origins) lives in `app/config.py` module constants.
 
 ---
@@ -193,7 +193,7 @@ Persists and retrieves completed runs when Postgres is configured:
 |----------|---------|
 | `GET /api/history` | Paginated list with completion metrics |
 | `GET /api/history/{id}` | Full submission detail (64 rows + metadata) |
-| `GET /api/history/{id}/attachments/download` | Presigned redirect to S3 object |
+| `GET /api/history/{id}/attachments/download` | Authorized stream from Vercel Blob |
 | `GET/PUT /api/history/{id}/metadata` | Analyst sign-off, notes, escalations, workflow state |
 | `POST /api/history/{id}/metadata/audit` | Append audit log entries |
 | `GET /api/entity-resolution/similar` | Fuzzy match on prior company names |
@@ -238,11 +238,11 @@ Postgres is **required** when:
 - Validating intake tokens.
 - Using History, metadata, or rerun-from-submission flows.
 
-### Object storage — S3-compatible (optional but required for uploads)
+### Object storage — Vercel Blob (optional but required for uploads)
 
-Uploaded files are stored in S3 (or S3-compatible) via `app/services/s3_storage.py`. Object keys are scoped per submission UUID. Downloads go through authorized presigned URLs — the API never streams raw blobs directly to the browser.
+Uploaded files are stored in a Vercel Blob store (private recommended) via `app/services/blob_storage.py`. Pathnames are scoped per submission UUID (`kyc/{submission_id}/…`). Downloads are authorized in the API, then streamed from Blob with `BLOB_READ_WRITE_TOKEN`.
 
-S3 env vars: `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, optionally `S3_REGION`.
+Env vars: `BLOB_READ_WRITE_TOKEN`, optionally `BLOB_STORE_ID`.
 
 ### In-memory job registry
 
@@ -269,7 +269,7 @@ Async process jobs (`app/services/pipeline_jobs.py`) track status, phase, progre
 | `kyc_row_signals.py` | Annotate rows with confidence/staleness metadata |
 | `narrative_summarizer.py` | Compliance narrative generation |
 | `pipeline_jobs.py` | In-memory async job tracking and progress callbacks |
-| `s3_storage.py` | Upload files and issue presigned download URLs |
+| `blob_storage.py` | Upload files and fetch blobs for authorized downloads |
 
 The canonical question list lives in `app/questions.py` (mirrored on the frontend in `src/data/kycQuestions.ts`). Playbook rules are in `backend/config/kyc_playbook.yaml` and reload on process start.
 
@@ -299,7 +299,7 @@ Browser  →  nginx (frontend container, :8080)
 Backend (FastAPI/Uvicorn, :8000)
   ├── Gemini API
   ├── Postgres (e.g. Railway)
-  └── S3-compatible object storage
+  └── Vercel Blob object storage
 ```
 
 The frontend can also deploy separately (e.g. Cloudflare Workers via `wrangler.jsonc`) with `VITE_API_BASE_URL` pointing at the API host. CORS origins must include the UI origin in `app/config.py`.
@@ -310,7 +310,7 @@ The frontend can also deploy separately (e.g. Cloudflare Workers via `wrangler.j
 
 | Category | Where | Examples |
 |----------|-------|----------|
-| Secrets | `.env` | `GEMINI_API_KEY`, `DATABASE_PASSWORD`, S3 credentials |
+| Secrets | `.env` | `GEMINI_API_KEY`, `DATABASE_PASSWORD`, `BLOB_READ_WRITE_TOKEN` |
 | Models & tuning | `app/config.py` | `GEMINI_MODEL_ANSWER`, `GEMINI_MODEL_VALIDATION`, concurrency, validation limits |
 | Playbook rules | `backend/config/kyc_playbook.yaml` | Policy-style checks surfaced to analysts |
 | CORS | `app/config.py` | `CORS_ALLOWED_ORIGINS` |
@@ -321,7 +321,7 @@ The frontend can also deploy separately (e.g. Cloudflare Workers via `wrangler.j
 
 1. **Section-parallel LLM calls** — The 64-question form is processed as 8 section batches, not 64 individual calls, balancing latency and prompt coherence.
 2. **Two-phase separation** — Web research (answer) and document validation are distinct phases with different models, tools, and concurrency profiles.
-3. **Graceful degradation** — Missing Postgres or S3 disables specific features rather than crashing the whole service; section failures produce partial results with error metadata.
+3. **Graceful degradation** — Missing Postgres or Blob storage disables specific features rather than crashing the whole service; section failures produce partial results with error metadata.
 4. **Analyst-first output** — Every row carries sources, validation status, and room for human override; History and metadata support audit trails.
 5. **Deterministic grounding aids** — SEC hub resolution, URL sanitization, and playbook evaluation complement non-deterministic LLM outputs.
 

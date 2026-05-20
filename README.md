@@ -64,7 +64,7 @@ In **production builds**, API calls use **`VITE_API_BASE_URL`** when set; otherw
 
 Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose).
 
-1. Put **`GEMINI_API_KEY`** and any S3/Postgres secrets (see `backend/.env.example`) in **`backend/.env`**.
+1. Put **`GEMINI_API_KEY`** and any Blob/Postgres secrets (see `backend/.env.example`) in **`backend/.env`**.
 2. From the **repository root**:
 
 ```sh
