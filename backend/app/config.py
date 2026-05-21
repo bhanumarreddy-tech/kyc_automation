@@ -173,10 +173,19 @@ def _ensure_public_ssl(url: str) -> str:
 
 
 def _resolve_database_url() -> str | None:
-    """Resolve Postgres URL from Railway-style env vars (no hardcoded endpoints)."""
+    """Resolve Postgres URL from Railway-style env vars (no hardcoded endpoints).
+
+    On Railway, prefer ``DATABASE_URL`` (private TCP). Many API services only
+    receive ``DATABASE_PUBLIC_URL`` from a linked Postgres plugin — that is used
+    as a fallback so History persistence still works.
+    """
     if _running_on_railway():
-        url = os.environ.get("DATABASE_URL", "").strip()
-        if url:
+        for name in ("DATABASE_URL", "POSTGRES_URL", "DATABASE_PUBLIC_URL"):
+            url = os.environ.get(name, "").strip()
+            if not url:
+                continue
+            if name == "DATABASE_PUBLIC_URL":
+                return _ensure_public_ssl(url)
             return url
         return _build_database_url(
             host=_env_first("PGHOST"),

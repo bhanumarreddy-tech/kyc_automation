@@ -222,6 +222,8 @@ export default function KYCAutomation() {
   const [historyItems, setHistoryItems] = useState<HistoryListItem[]>([]);
   const [historyListLoading, setHistoryListLoading] = useState(false);
   const [historyListError, setHistoryListError] = useState<string | null>(null);
+  /** From ``GET /api/health`` when the history list is empty (explains missing saves). */
+  const [historyDatabaseStatus, setHistoryDatabaseStatus] = useState<string | null>(null);
   const [historyDetailLoading, setHistoryDetailLoading] = useState(false);
   const [historyRunMeta, setHistoryRunMeta] = useState<{
     attachedDocuments: AttachedDocumentItem[];
@@ -305,14 +307,27 @@ export default function KYCAutomation() {
     const load = async () => {
       setHistoryListLoading(true);
       setHistoryListError(null);
+      setHistoryDatabaseStatus(null);
       try {
         const res = await fetch(HISTORY_LIST_ENDPOINT);
         if (!res.ok) {
           throw new Error(`Failed to load history (${res.status})`);
         }
         const data = (await res.json()) as HistoryListItem[];
+        const items = Array.isArray(data) ? data : [];
         if (!cancelled) {
-          setHistoryItems(Array.isArray(data) ? data : []);
+          setHistoryItems(items);
+          if (items.length === 0) {
+            try {
+              const healthRes = await fetch(apiUrl("/api/health"));
+              if (healthRes.ok) {
+                const health = (await healthRes.json()) as { database?: string };
+                setHistoryDatabaseStatus(health.database ?? null);
+              }
+            } catch {
+              setHistoryDatabaseStatus(null);
+            }
+          }
         }
       } catch (e) {
         if (!cancelled) {
@@ -1492,9 +1507,29 @@ export default function KYCAutomation() {
                 )}
                 {!historyListLoading && !historyListError && historyItems.length === 0 && (
                   <p className="text-sm text-muted-foreground">
-                    No saved runs yet. Complete a run while the server has{" "}
-                    <code className="rounded bg-muted px-1 py-0.5 text-xs">DATABASE_URL</code> set
-                    to store results here.
+                    {historyDatabaseStatus === "disabled" ? (
+                      <>
+                        This API is not connected to Postgres, so completed runs are not saved to
+                        History. On Railway staging, link the Postgres plugin to the API service and
+                        set{" "}
+                        <code className="rounded bg-muted px-1 py-0.5 text-xs">DATABASE_URL</code> or{" "}
+                        <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                          DATABASE_PUBLIC_URL
+                        </code>
+                        , then redeploy.
+                      </>
+                    ) : historyDatabaseStatus === "error" ? (
+                      <>
+                        Postgres is configured but the API cannot reach it (health check failed).
+                        Fix database credentials or networking, then redeploy.
+                      </>
+                    ) : (
+                      <>
+                        No saved runs yet. After a successful run you should see a submission ID in
+                        the results toast (&quot;Saved to history&quot;). If runs complete without
+                        that message, the server is not persisting submissions.
+                      </>
+                    )}
                   </p>
                 )}
                 {!historyListLoading &&
