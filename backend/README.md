@@ -33,3 +33,31 @@ uvicorn app.main:app --reload --port 8000
 - Additional routes for intake tokens, reruns, attachments, and compliance narrative
 
 Configuration details: [`app/config.py`](app/config.py) and [`.env.example`](.env.example).
+
+## RAG observability (MLflow)
+
+The validation RAG pipeline can emit **MLflow GenAI traces** for indexing, embedding, hybrid retrieval (dense + lexical + RRF), reranking, and per-question Gemini validation.
+
+1. Enable in `.env`:
+
+   ```env
+   MLFLOW_TRACING_ENABLED=true
+   MLFLOW_TRACKING_URI=file:./mlruns
+   MLFLOW_EXPERIMENT_NAME=kyc-rag-validation
+   ```
+
+2. Run the backend and process a submission as usual.
+
+3. Open the MLflow UI (from the `backend` directory):
+
+   ```powershell
+   mlflow ui --port 5000
+   ```
+
+4. Browse **Experiments → kyc-rag-validation**. Each pipeline run is one MLflow run; expand traces to see:
+   - **RETRIEVER** spans — query text, hybrid candidate scores, filtered/reranked top-3 hits
+   - **RERANKER** spans — token-overlap rerank ordering
+   - **EMBEDDING** spans — document/query embedding batches
+   - **CHAIN** / **CHAT_MODEL** spans — per-question validation outcomes
+
+Traces are logged asynchronously (`mlflow.config.enable_async_logging()`) to keep pipeline latency low. Point `MLFLOW_TRACKING_URI` at a remote MLflow tracking server for shared team visibility.

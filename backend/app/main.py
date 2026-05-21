@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.config import get_settings
+from app.services.mlflow_tracing import configure as configure_mlflow_tracing
 from app.db.session import db_session_maker, dispose_database, init_database
 from app.middleware.request_logging import RequestLoggingMiddleware
 from app.routes import history as history_route
@@ -40,6 +41,7 @@ _http_logger = logging.getLogger("app.http")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_mlflow_tracing()
     await init_database()
     yield
     await dispose_database()

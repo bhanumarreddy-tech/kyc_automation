@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -542,6 +543,21 @@ async def _invoke_validation_gemini_once(
 
     by_serial = _parse_validation_payload(data, known_documents, questions)
     out = _gather_validation_results_placeholder(by_serial, questions)
+
+    if len(questions) == 1:
+        from app.services.mlflow_tracing import log_gemini_validation_call
+
+        q = questions[0]
+        vr = out[0]
+        log_gemini_validation_call(
+            serial_no=q.serial_no,
+            section_no=section_no,
+            model=settings.gemini_validation_model,
+            shard_hint=shard_hint,
+            doc_count=len(shard_docs),
+            validation=vr.validation,
+            source_count=len(vr.validation_sources),
+        )
     return out
 
 
@@ -685,6 +701,7 @@ async def validate_question(
     if not documents:
         return ValidationResult(question.serial_no, "", [])
 
+    started = time.perf_counter()
     settings = get_settings()
     client = get_client()
     attach = settings.validation_attach_documents
@@ -717,6 +734,8 @@ async def validate_question(
     prepared: list[ParsedDocument] = []
     retrieval_used = False
     recall_docs_for_url_index: list[ParsedDocument] = []
+    validation_path = "unknown"
+    recall_used = False
 
     use_rag = submission_id is not None and rag_indexing_available(settings)
     indexed = 0
@@ -742,10 +761,12 @@ async def validate_question(
             )
             prepared = natives + retrieved_docs
             retrieval_used = True
+            validation_path = "rag"
 
     if not prepared:
         if corpus_chars <= settings.rag_small_doc_full_text_chars:
             prepared = chunked
+            validation_path = "full_corpus"
         elif textual_pool:
             retrieved = retrieval_selected_documents(
                 textual_pool,
@@ -755,8 +776,10 @@ async def validate_question(
             )
             prepared = natives + retrieved
             retrieval_used = bool(retrieved)
+            validation_path = "keyword"
         else:
             prepared = natives
+            validation_path = "natives_only"
 
     if not prepared:
         return ValidationResult(question.serial_no, "", [])
@@ -823,10 +846,24 @@ async def validate_question(
                 )
             )
             recall_docs_for_url_index = recall_prepared
+            recall_used = True
 
     merged = _merge_shard_validation_results(shard_results, questions)[0]
     url_idx = _source_url_index(documents, prepared, recall_docs_for_url_index)
     enriched = _enrich_validation_results_urls([merged], url_idx)
+    result = enriched[0]
+
+    from app.services.mlflow_tracing import log_validation_question
+
+    log_validation_question(
+        serial_no=question.serial_no,
+        section_no=question.section_no,
+        validation_path=validation_path,
+        validation=result.validation,
+        retrieval_used=retrieval_used,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        recall_used=recall_used,
+    )
 
     logger.info(
         "Validation question serial=%d section=%d for '%s' finished model=%s retrieval=%s",
@@ -836,7 +873,7 @@ async def validate_question(
         settings.gemini_validation_model,
         retrieval_used,
     )
-    return enriched[0]
+    return result
 
 
 async def validate_section(

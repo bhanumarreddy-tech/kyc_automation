@@ -52,7 +52,7 @@ async def test_retrieve_for_query_returns_reranked_chunks(monkeypatch: pytest.Mo
         patch(
             "app.services.rag.retrieve._hybrid_retrieve",
             new_callable=AsyncMock,
-            return_value=[hit],
+            return_value=([hit], [0.1] * 768),
         ),
     ):
         results = await retrieve_for_query(sid, "registration number CIK", get_settings())

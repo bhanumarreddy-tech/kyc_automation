@@ -57,10 +57,10 @@ async def _hybrid_retrieve(
     settings: Settings,
     *,
     top_k: int,
-) -> list[RetrievedChunk]:
+) -> tuple[list[RetrievedChunk], list[float]]:
     maker = db_session_maker()
     if maker is None:
-        return []
+        return [], []
 
     query_vec = await embed_query(query, settings)
     vec_literal = "[" + ",".join(str(v) for v in query_vec) + "]"
@@ -149,7 +149,7 @@ async def _hybrid_retrieve(
         fused.append(rc)
 
     fused.sort(key=lambda c: -c.fused_score)
-    return fused[:top_k]
+    return fused[:top_k], query_vec
 
 
 def _filter_by_relevance(
@@ -168,6 +168,8 @@ async def retrieve_for_query(
     retrieve_top_k: int | None = None,
     rerank_top_k: int | None = None,
     min_relevance: float | None = None,
+    serial_no: int | None = None,
+    recall: bool = False,
 ) -> list[RetrievedChunk]:
     top_k = retrieve_top_k or settings.rag_retrieve_top_k
     rerank_k = rerank_top_k or settings.rag_rerank_top_k
@@ -177,11 +179,13 @@ async def retrieve_for_query(
         else settings.rag_min_relevance_score
     )
 
-    candidates = await _hybrid_retrieve(submission_id, query, settings, top_k=top_k)
-    candidates = _filter_by_relevance(candidates, min_score=min_rel)
+    hybrid_candidates, query_embedding = await _hybrid_retrieve(
+        submission_id, query, settings, top_k=top_k
+    )
+    filtered_candidates = _filter_by_relevance(hybrid_candidates, min_score=min_rel)
 
     reranked: list[RetrievedChunk] = []
-    for c in candidates:
+    for c in filtered_candidates:
         score = _rerank_score(query, c)
         reranked.append(
             RetrievedChunk(
@@ -199,7 +203,29 @@ async def retrieve_for_query(
             )
         )
     reranked.sort(key=lambda c: -c.rerank_score)
-    return reranked[:rerank_k]
+    hits = reranked[:rerank_k]
+
+    from app.services.mlflow_tracing import log_rerank_pass, log_retrieval
+
+    log_retrieval(
+        query=query,
+        recall=recall,
+        serial_no=serial_no,
+        retrieve_top_k=top_k,
+        rerank_top_k=rerank_k,
+        min_relevance=min_rel,
+        hybrid_candidates=hybrid_candidates,
+        filtered_candidates=filtered_candidates,
+        hits=hits,
+        query_embedding=query_embedding,
+    )
+    log_rerank_pass(
+        query=query,
+        serial_no=serial_no,
+        candidates=filtered_candidates,
+        hits=hits,
+    )
+    return hits
 
 
 def _question_retrieval_query(question: KYCQuestion, answer: AnsweredQuestion) -> str:
@@ -232,6 +258,8 @@ async def retrieve_for_question(
         retrieve_top_k=retrieve_k,
         rerank_top_k=rerank_k,
         min_relevance=min_rel,
+        serial_no=question.serial_no,
+        recall=recall,
     )
     logger.info(
         "RAG question retrieve submission=%s serial=%d recall=%s chunks=%d",

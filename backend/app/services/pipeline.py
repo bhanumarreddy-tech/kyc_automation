@@ -33,6 +33,7 @@ from app.services.source_urls import (
     sanitize_answer_sources_urls,
 )
 from app.services.rag.index import index_submission_documents, rag_indexing_available
+from app.services.mlflow_tracing import pipeline_run
 from app.services.validate_section import ValidationResult, validate_question
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,32 @@ async def run_pipeline(
     """Run the full KYC pipeline and return rows plus per-section error metadata."""
 
     settings = get_settings()
+    with pipeline_run(
+        company=company,
+        submission_id=submission_id,
+        settings=settings,
+    ):
+        return await _run_pipeline_body(
+            company,
+            uploads,
+            reference_urls,
+            settings=settings,
+            submission_id=submission_id,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
+        )
+
+
+async def _run_pipeline_body(
+    company: str,
+    uploads: list[tuple[str, bytes, str]],
+    reference_urls: list[str] | None = None,
+    *,
+    settings: Any,
+    submission_id: UUID | None = None,
+    on_progress: Callable[[ProgressPayload], Awaitable[None] | None] | None = None,
+    cancel_event: asyncio.Event | None = None,
+) -> RunPipelineOutcome:
     sections = group_by_section()
     section_errors: list[dict[str, Any]] = []
 

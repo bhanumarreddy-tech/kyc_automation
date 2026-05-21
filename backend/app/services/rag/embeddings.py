@@ -50,6 +50,13 @@ async def embed_texts(
             )
             break
 
+    from app.services.mlflow_tracing import log_embedding_batch
+
+    log_embedding_batch(
+        text_count=len(texts),
+        vector_count=len(out),
+        task_type=task_type,
+    )
     return out
 
 
