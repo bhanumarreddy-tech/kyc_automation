@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 from urllib.parse import quote_plus
 
@@ -109,18 +110,6 @@ def _redact_url(url: str) -> str:
     return re.sub(r"(://[^:/@]+:)[^@]+(@)", r"\1***\2", url, count=1)
 
 
-def _allowed_hosts() -> str:
-    explicit = os.environ.get("MLFLOW_ALLOWED_HOSTS", "").strip()
-    if explicit:
-        return explicit
-
-    if _running_on_railway():
-        # Railway health checks send Host: healthcheck.railway.app:PORT — allow all.
-        return "*"
-
-    return "localhost,127.0.0.1,localhost:*,127.0.0.1:*"
-
-
 def _workers() -> str:
     return os.environ.get("MLFLOW_UI_WORKERS", "1").strip() or "1"
 
@@ -134,26 +123,37 @@ def _serve_artifacts() -> bool:
     return False
 
 
+def _artifact_root() -> str:
+    return os.environ.get("MLFLOW_DEFAULT_ARTIFACT_ROOT", "file:///tmp/mlartifacts").strip()
+
+
 def main() -> None:
     uri = resolve_tracking_uri()
     port = os.environ.get("PORT", "5000").strip() or "5000"
-    allowed_hosts = _allowed_hosts()
     workers = _workers()
     serve_artifacts = _serve_artifacts()
+    artifact_root = _artifact_root()
 
     print(
         f"Starting MLflow UI on 0.0.0.0:{port} "
         f"backend={_redact_url(uri)} "
         f"workers={workers} "
-        f"allowed_hosts={allowed_hosts} "
-        f"serve_artifacts={serve_artifacts}"
+        f"serve_artifacts={serve_artifacts} "
+        f"artifact_root={artifact_root}"
     )
+    if _running_on_railway():
+        print(
+            "Railway: ensure Networking → Target port matches $PORT "
+            f"(currently {port}). Health check path: /health",
+            file=sys.stderr,
+        )
     if _is_file_tracking_uri(uri):
         print(
             "warning: using file-based MLflow store; link Postgres on Railway for shared traces",
             file=sys.stderr,
         )
 
+    # MLflow 2.22 uses Flask + gunicorn (not uvicorn). Keep flags compatible with 2.x.
     cmd = [
         "mlflow",
         "ui",
@@ -167,15 +167,18 @@ def main() -> None:
         uri,
         "--registry-store-uri",
         uri,
-        "--allowed-hosts",
-        allowed_hosts,
-        "--uvicorn-opts",
-        "--log-level warning",
+        "--default-artifact-root",
+        artifact_root,
+        "--gunicorn-opts",
+        "--timeout 120 --graceful-timeout 30 --log-level info",
     ]
     if not serve_artifacts:
         cmd.append("--no-serve-artifacts")
 
-    os.execvp(cmd[0], cmd)
+    completed = subprocess.run(cmd, check=False)
+    if completed.returncode != 0:
+        print(f"mlflow ui exited with code {completed.returncode}", file=sys.stderr)
+        raise SystemExit(completed.returncode)
 
 
 if __name__ == "__main__":
