@@ -1,14 +1,12 @@
 """End-to-end orchestration for a single ``/api/process`` request.
 
-For each of the 8 sections we make:
+For each of the 8 sections we make one *answer* Gemini call with Google
+Search grounding. Validation then runs per question (64 total): each question
+retrieves top document chunks and gets its own validation Gemini call.
 
-1. one *answer* Gemini call with Google Search grounding, and
-2. one *validation* Gemini call with the user's documents attached.
-
-The 8 answer calls run concurrently via :func:`asyncio.gather`. The 8
-validation calls then run concurrently as well. Results are merged into
-exactly 64 :class:`~app.schemas.KYCRow` instances ready to be returned
-to the frontend.
+The 8 answer calls and 64 validation calls run concurrently (bounded by
+semaphores). Results are merged into exactly 64
+:class:`~app.schemas.KYCRow` instances ready to be returned to the frontend.
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ from app.services.source_urls import (
     sanitize_answer_sources_urls,
 )
 from app.services.rag.index import index_submission_documents, rag_indexing_available
-from app.services.validate_section import ValidationResult, validate_section
+from app.services.validate_section import ValidationResult, validate_question
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +73,12 @@ def _error_stub_answers(questions: list[KYCQuestion], err_id: str, phase: str) -
     return [AnsweredQuestion(q.serial_no, msg, []) for q in questions]
 
 
+def _empty_validation(question: KYCQuestion) -> ValidationResult:
+    return ValidationResult(question.serial_no, "", [])
+
+
 def _empty_validations(questions: list[KYCQuestion]) -> list[ValidationResult]:
-    return [ValidationResult(q.serial_no, "", []) for q in questions]
+    return [_empty_validation(q) for q in questions]
 
 
 async def run_pipeline(
@@ -184,24 +186,8 @@ async def run_pipeline(
                 await asyncio.sleep(inter_call_delay)
             return result
 
-    async def _bounded_validate(
-        section_no: int,
-        section_name: str,
-        questions: list[KYCQuestion],
-        answers: list[AnsweredQuestion],
-    ) -> list[ValidationResult]:
-        async with validation_sem:
-            return await validate_section(
-                company,
-                section_no,
-                section_name,
-                questions,
-                answers,
-                parsed_docs,
-                submission_id=submission_id,
-            )
-
     n_sec = len(sections)
+    n_questions = len(KYC_QUESTIONS)
     answer_lock = asyncio.Lock()
     answer_done = 0
 
@@ -287,6 +273,11 @@ async def run_pipeline(
 
     answers_per_section = normalized_answers
 
+    answers_by_serial: dict[int, AnsweredQuestion] = {}
+    for section_answers in answers_per_section:
+        for item in section_answers:
+            answers_by_serial[item.serial_no] = item
+
     await sanitize_answer_sources_urls(answers_per_section, settings)
     prioritize_and_cap_answer_sources(
         answers_per_section,
@@ -299,44 +290,59 @@ async def run_pipeline(
             on_progress,
             {"phase": "cancelled", "status": "stopping", "detail": "Skipped validation (cancelled)"},
         )
-        validations_per_section = [_empty_validations(g[2]) for g in sections]
+        validation_results = [_empty_validation(q) for q in KYC_QUESTIONS]
     else:
         await _emit(
             on_progress,
             {
                 "phase": "validate",
                 "status": "started",
-                "detail": "Running document validation (8 sections)",
+                "detail": f"Running document validation ({n_questions} questions)",
             },
         )
+
+        async def _bounded_validate_question(question: KYCQuestion) -> ValidationResult:
+            async with validation_sem:
+                answer = answers_by_serial.get(question.serial_no)
+                if answer is None:
+                    return _empty_validation(question)
+                return await validate_question(
+                    company,
+                    question,
+                    answer,
+                    parsed_docs,
+                    submission_id=submission_id,
+                )
 
         val_done_lock = asyncio.Lock()
         val_done = 0
 
-        async def tracked_validate(
+        async def tracked_validate_question(
             _vidx: int,
-            section_no: int,
-            section_name: str,
-            questions: list[KYCQuestion],
-            answers: list[AnsweredQuestion],
-        ) -> list[ValidationResult]:
+            question: KYCQuestion,
+        ) -> ValidationResult:
             nonlocal val_done
             if cancel_event and cancel_event.is_set():
                 raise PipelineCancelled()
             try:
-                result = await _bounded_validate(section_no, section_name, questions, answers)
+                result = await _bounded_validate_question(question)
             except Exception as exc:
                 err_id = uuid.uuid4().hex[:12]
-                logger.exception("Validation section %s failed: %s", section_no, exc)
+                logger.exception(
+                    "Validation question serial=%s failed: %s",
+                    question.serial_no,
+                    exc,
+                )
                 section_errors.append(
                     {
-                        "sectionNo": section_no,
+                        "sectionNo": question.section_no,
+                        "serialNo": question.serial_no,
                         "phase": "validate",
                         "message": f"{type(exc).__name__}: {exc}",
                         "errorId": err_id,
                     }
                 )
-                result = _empty_validations(questions)
+                result = _empty_validation(question)
             async with val_done_lock:
                 val_done += 1
                 done = val_done
@@ -344,58 +350,51 @@ async def run_pipeline(
                 on_progress,
                 {
                     "phase": "validate",
-                    "status": "section_complete",
-                    "completedSections": done,
-                    "totalSections": n_sec,
-                    "sectionNo": section_no,
-                    "sectionName": section_name,
-                    "detail": f"Validation phase {done}/{n_sec}: {section_name}",
+                    "status": "question_complete",
+                    "completedQuestions": done,
+                    "totalQuestions": n_questions,
+                    "serialNo": question.serial_no,
+                    "sectionNo": question.section_no,
+                    "sectionName": question.section_name,
+                    "detail": (
+                        f"Validation phase {done}/{n_questions}: "
+                        f"Q{question.serial_no} ({question.section_name})"
+                    ),
                 },
             )
             return result
 
         validation_tasks = [
-            tracked_validate(
-                idx,
-                section_no,
-                section_name,
-                questions,
-                answers_per_section[idx],
-            )
-            for idx, (section_no, section_name, questions) in enumerate(sections)
+            tracked_validate_question(idx, question)
+            for idx, question in enumerate(KYC_QUESTIONS)
         ]
         raw_vals = await asyncio.gather(*validation_tasks, return_exceptions=True)
 
-        validations_per_section = []
+        validation_results = []
         for idx, res in enumerate(raw_vals):
+            question = KYC_QUESTIONS[idx]
             if isinstance(res, PipelineCancelled):
-                _, _, questions = sections[idx]
-                validations_per_section.append(_empty_validations(questions))
+                validation_results.append(_empty_validation(question))
             elif isinstance(res, BaseException):
-                section_no, _, questions = sections[idx]
                 err_id = uuid.uuid4().hex[:12]
-                logger.exception("Unexpected validation task failure section=%s", section_no)
+                logger.exception(
+                    "Unexpected validation task failure serial=%s",
+                    question.serial_no,
+                )
                 section_errors.append(
                     {
-                        "sectionNo": section_no,
+                        "sectionNo": question.section_no,
+                        "serialNo": question.serial_no,
                         "phase": "validate",
                         "message": f"{type(res).__name__}: {res}",
                         "errorId": err_id,
                     }
                 )
-                validations_per_section.append(_empty_validations(questions))
+                validation_results.append(_empty_validation(question))
             else:
-                validations_per_section.append(res)
+                validation_results.append(res)
 
-    answers_by_serial: dict[int, AnsweredQuestion] = {}
-    validations_by_serial: dict[int, ValidationResult] = {}
-
-    for section_answers in answers_per_section:
-        for item in section_answers:
-            answers_by_serial[item.serial_no] = item
-    for section_validations in validations_per_section:
-        for item in section_validations:
-            validations_by_serial[item.serial_no] = item
+    validations_by_serial = {item.serial_no: item for item in validation_results}
 
     rows: list[KYCRow] = []
     for q in KYC_QUESTIONS:

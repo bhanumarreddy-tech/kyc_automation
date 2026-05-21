@@ -283,20 +283,19 @@ async def test_pipeline_merges_upload_and_url_docs(monkeypatch: pytest.MonkeyPat
             AnsweredQuestion(serial_no=q.serial_no, answer="x", sources=[]) for q in questions
         ]
 
-    async def fake_validate(  # noqa: ANN202
+    async def fake_validate_question(  # noqa: ANN202
         _company,
-        _section_no,
-        _section_name,
-        questions,
-        _answers,
+        question,
+        _answer,
         parsed_docs,
         **_kwargs,
     ):
         captured.setdefault("docs", []).append(parsed_docs)
-        return [
-            ValidationResult(serial_no=q.serial_no, validation="No", validation_sources=[])
-            for q in questions
-        ]
+        return ValidationResult(
+            serial_no=question.serial_no,
+            validation="No",
+            validation_sources=[],
+        )
 
     async def fake_sec_hub(*_args, **_kwargs):  # noqa: ANN202
         return None
@@ -305,12 +304,12 @@ async def test_pipeline_merges_upload_and_url_docs(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(pipeline_mod, "parse_documents", fake_parse)
     monkeypatch.setattr(pipeline_mod, "ingest_reference_urls", fake_ingest)
     monkeypatch.setattr(pipeline_mod, "answer_section", fake_answer)
-    monkeypatch.setattr(pipeline_mod, "validate_section", fake_validate)
+    monkeypatch.setattr(pipeline_mod, "validate_question", fake_validate_question)
 
     outcome = await pipeline_mod.run_pipeline("Co", [], reference_urls=["https://example.com/x"])
     rows = outcome.rows
     assert len(rows) == 64
-    assert captured["docs"]
+    assert len(captured["docs"]) == 64
     for batch in captured["docs"]:
         names = {d.filename for d in batch}
         assert "local.pdf" in names

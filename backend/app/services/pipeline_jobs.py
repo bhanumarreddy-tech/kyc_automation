@@ -20,7 +20,7 @@ class PipelineJobState:
     answer_completed: int = 0
     answer_total: int = 8
     validate_completed: int = 0
-    validate_total: int = 8
+    validate_total: int = 64
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task | None = None
     result_payload: dict[str, Any] | None = None
@@ -90,12 +90,18 @@ async def apply_progress_payload(job_id: str, payload: dict[str, Any]) -> None:
         phase = str(payload.get("phase") or "")
         st.phase = phase
         st.detail = str(payload.get("detail") or "")
-        if payload.get("status") == "section_complete":
-            done = int(payload.get("completedSections") or 0)
-            total = int(payload.get("totalSections") or 8)
-            if phase == "answer":
+        if payload.get("status") in ("section_complete", "question_complete"):
+            if phase == "answer" and payload.get("status") == "section_complete":
+                done = int(payload.get("completedSections") or 0)
+                total = int(payload.get("totalSections") or 8)
                 st.answer_completed = done
                 st.answer_total = total
             elif phase == "validate":
+                if payload.get("status") == "question_complete":
+                    done = int(payload.get("completedQuestions") or 0)
+                    total = int(payload.get("totalQuestions") or 64)
+                else:
+                    done = int(payload.get("completedSections") or 0)
+                    total = int(payload.get("totalSections") or 8)
                 st.validate_completed = done
                 st.validate_total = total

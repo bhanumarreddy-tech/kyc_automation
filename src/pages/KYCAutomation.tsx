@@ -1053,7 +1053,7 @@ export default function KYCAutomation() {
             answerCompleted={jobProgress?.answerCompleted ?? 0}
             answerTotal={jobProgress?.answerTotal ?? 8}
             validateCompleted={jobProgress?.validateCompleted ?? 0}
-            validateTotal={jobProgress?.validateTotal ?? 8}
+            validateTotal={jobProgress?.validateTotal ?? 64}
             onCancelRequest={handleCancelActiveJob}
           />
             )}

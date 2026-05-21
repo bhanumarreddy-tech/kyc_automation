@@ -38,7 +38,7 @@ function parseJobSnapshot(raw: Record<string, unknown>): JobSnapshot {
     answerCompleted: Number(raw.answerCompleted ?? 0) || 0,
     answerTotal: Number(raw.answerTotal ?? 8) || 8,
     validateCompleted: Number(raw.validateCompleted ?? 0) || 0,
-    validateTotal: Number(raw.validateTotal ?? 8) || 8,
+    validateTotal: Number(raw.validateTotal ?? 64) || 64,
   };
 }
 

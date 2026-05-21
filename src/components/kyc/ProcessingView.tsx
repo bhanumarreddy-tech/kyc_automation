@@ -29,7 +29,7 @@ const ProcessingView = ({
   answerCompleted = 0,
   answerTotal = 8,
   validateCompleted = 0,
-  validateTotal = 8,
+  validateTotal = 64,
   onCancelRequest,
 }: ProcessingViewProps) => {
   const urlPart =

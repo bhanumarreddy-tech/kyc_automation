@@ -12,7 +12,7 @@ from app.config import get_settings
 from app.questions import KYCQuestion
 from app.services.answer_section import AnsweredQuestion
 from app.services.documents import ParsedDocument
-from app.services.rag.retrieve import RetrievedChunk, retrieve_for_query
+from app.services.rag.retrieve import RetrievedChunk, retrieve_for_query, retrieve_for_question
 from app.services.validate_section import _prepare_documents_for_validation_rag
 
 
@@ -118,3 +118,47 @@ async def test_prepare_rag_uses_retrieved_not_full_corpus(
     assert len(prepared) == 1
     assert "CIK" in prepared[0].text
     assert len(prepared[0].text) < len(long_text)
+
+
+@pytest.mark.asyncio
+async def test_retrieve_for_question_caps_at_validation_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _reset_env(monkeypatch)
+    sid = uuid.uuid4()
+    question = KYCQuestion(1, 1, "S1", "What is the registration number?")
+    answer = AnsweredQuestion(1, "CIK 0000764478", [])
+    settings = get_settings()
+    hits = [
+        RetrievedChunk(
+            chunk_id=uuid.uuid4(),
+            document_id="10k.pdf",
+            chunk_index=i,
+            content=f"chunk {i}",
+            page_start=1,
+            page_end=1,
+            filename="10k.pdf",
+            dense_score=0.9,
+            lexical_score=0.0,
+            fused_score=0.5,
+            rerank_score=0.6 - i * 0.01,
+        )
+        for i in range(3)
+    ]
+
+    with (
+        patch(
+            "app.services.rag.retrieve.rag_indexing_available",
+            return_value=True,
+        ),
+        patch(
+            "app.services.rag.retrieve.retrieve_for_query",
+            new_callable=AsyncMock,
+            return_value=hits,
+        ) as mock_query,
+    ):
+        results = await retrieve_for_question(sid, question, answer, settings)
+
+    assert len(results) == 3
+    mock_query.assert_awaited_once()
+    assert mock_query.await_args.kwargs["rerank_top_k"] == settings.validation_chunks_per_question

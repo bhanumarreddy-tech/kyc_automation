@@ -43,12 +43,13 @@ from app.services.rag.pack import (
     chunks_to_parsed_documents,
     should_use_full_corpus_fallback,
 )
-from app.services.rag.retrieve import retrieve_for_section
+from app.services.rag.retrieve import retrieve_for_question, retrieve_for_section
 
 logger = logging.getLogger(__name__)
 
 # Gemini ignores ``cache_control`` on blocks.
 _CACHE_MIN_CHARS = 4_500
+_QUESTION_EVIDENCE_CHAR_BUDGET = 8_000
 
 
 _SYSTEM_PROMPT = (
@@ -669,6 +670,173 @@ async def _prepare_documents_for_validation_rag(
         if is_native_validation_part(d, settings, attach_natively=attach)
     ]
     return natives + retrieved_docs, True, fallback_corpus
+
+
+async def validate_question(
+    company: str,
+    question: KYCQuestion,
+    answer: AnsweredQuestion,
+    documents: list[ParsedDocument],
+    *,
+    submission_id: UUID | None = None,
+) -> ValidationResult:
+    """Validate one KYC answer against top retrieved document chunks."""
+
+    if not documents:
+        return ValidationResult(question.serial_no, "", [])
+
+    settings = get_settings()
+    client = get_client()
+    attach = settings.validation_attach_documents
+    query = f"{question.question}\n{answer.answer or 'Not found'}"
+
+    pdf_expanded = expand_all_documents(documents, settings)
+    chunked = expand_large_text_documents(
+        pdf_expanded, settings, attach_natively=attach
+    )
+    textual_pool = [
+        d
+        for d in chunked
+        if (
+            not is_native_validation_part(d, settings, attach_natively=attach)
+            and bool(d.text and d.text.strip())
+        )
+    ]
+    corpus_chars = (
+        estimated_text_budget(chunked, settings, attach_natively=attach)
+        if textual_pool
+        else 0
+    )
+    fallback_corpus = list(textual_pool)
+    natives = [
+        d
+        for d in chunked
+        if is_native_validation_part(d, settings, attach_natively=attach)
+    ]
+
+    prepared: list[ParsedDocument] = []
+    retrieval_used = False
+    recall_docs_for_url_index: list[ParsedDocument] = []
+
+    use_rag = submission_id is not None and rag_indexing_available(settings)
+    indexed = 0
+    if use_rag and submission_id is not None:
+        indexed = await count_submission_chunks(submission_id)
+
+    if (
+        use_rag
+        and indexed > 0
+        and not should_use_full_corpus_fallback(indexed, corpus_chars, settings)
+    ):
+        hits = await retrieve_for_question(
+            submission_id,
+            question,
+            answer,
+            settings,
+            recall=False,
+        )
+        if hits:
+            retrieved_docs = chunks_to_parsed_documents(
+                hits,
+                max_total_chars=_QUESTION_EVIDENCE_CHAR_BUDGET,
+            )
+            prepared = natives + retrieved_docs
+            retrieval_used = True
+
+    if not prepared:
+        if corpus_chars <= settings.rag_small_doc_full_text_chars:
+            prepared = chunked
+        elif textual_pool:
+            retrieved = retrieval_selected_documents(
+                textual_pool,
+                query,
+                settings,
+                top_k=settings.validation_chunks_per_question,
+            )
+            prepared = natives + retrieved
+            retrieval_used = bool(retrieved)
+        else:
+            prepared = natives
+
+    if not prepared:
+        return ValidationResult(question.serial_no, "", [])
+
+    known_documents = {d.filename for d in prepared}
+    questions = [question]
+    answers = [answer]
+
+    shard_results: list[list[ValidationResult]] = [
+        await _invoke_validation_gemini_once(
+            client=client,
+            settings=settings,
+            company=company,
+            section_no=question.section_no,
+            shard_docs=prepared,
+            questions=questions,
+            answers=answers,
+            known_documents=known_documents,
+            shard_hint="",
+            max_total_chars=settings.validation_max_total_text_chars,
+            max_preview_chars=settings.validation_max_text_preview_chars,
+        )
+    ]
+
+    if retrieval_used and not _globally_has_yes(shard_results[0]):
+        recall_prepared: list[ParsedDocument] | None = None
+        if use_rag and submission_id is not None and indexed > 0:
+            recall_hits = await retrieve_for_question(
+                submission_id,
+                question,
+                answer,
+                settings,
+                recall=True,
+            )
+            if recall_hits:
+                recall_prepared = natives + chunks_to_parsed_documents(
+                    recall_hits,
+                    max_total_chars=_QUESTION_EVIDENCE_CHAR_BUDGET,
+                )
+        elif textual_pool:
+            wider = retrieval_selected_documents(
+                fallback_corpus,
+                query,
+                settings,
+                top_k=settings.rag_recall_rerank_top_k,
+            )
+            recall_prepared = natives + wider
+
+        if recall_prepared:
+            recall_known = {d.filename for d in recall_prepared}
+            shard_results.append(
+                await _invoke_validation_gemini_once(
+                    client=client,
+                    settings=settings,
+                    company=company,
+                    section_no=question.section_no,
+                    shard_docs=recall_prepared,
+                    questions=questions,
+                    answers=answers,
+                    known_documents=recall_known,
+                    shard_hint="recall",
+                    max_total_chars=settings.validation_max_total_text_chars,
+                    max_preview_chars=settings.validation_max_text_preview_chars,
+                )
+            )
+            recall_docs_for_url_index = recall_prepared
+
+    merged = _merge_shard_validation_results(shard_results, questions)[0]
+    url_idx = _source_url_index(documents, prepared, recall_docs_for_url_index)
+    enriched = _enrich_validation_results_urls([merged], url_idx)
+
+    logger.info(
+        "Validation question serial=%d section=%d for '%s' finished model=%s retrieval=%s",
+        question.serial_no,
+        question.section_no,
+        company,
+        settings.gemini_validation_model,
+        retrieval_used,
+    )
+    return enriched[0]
 
 
 async def validate_section(

@@ -202,6 +202,47 @@ async def retrieve_for_query(
     return reranked[:rerank_k]
 
 
+def _question_retrieval_query(question: KYCQuestion, answer: AnsweredQuestion) -> str:
+    answer_text = answer.answer if answer.answer else "Not found"
+    return f"{question.question}\n{answer_text}"
+
+
+async def retrieve_for_question(
+    submission_id: uuid.UUID,
+    question: KYCQuestion,
+    answer: AnsweredQuestion,
+    settings: Settings | None = None,
+    *,
+    recall: bool = False,
+) -> list[RetrievedChunk]:
+    """Retrieve top evidence chunks for a single validation question."""
+    s = settings or get_settings()
+    if not rag_indexing_available(s):
+        return []
+
+    retrieve_k = s.rag_recall_retrieve_top_k if recall else s.rag_retrieve_top_k
+    rerank_k = s.rag_recall_rerank_top_k if recall else s.validation_chunks_per_question
+    min_rel = s.rag_recall_min_relevance_score if recall else s.rag_min_relevance_score
+    query = _question_retrieval_query(question, answer)
+
+    hits = await retrieve_for_query(
+        submission_id,
+        query,
+        s,
+        retrieve_top_k=retrieve_k,
+        rerank_top_k=rerank_k,
+        min_relevance=min_rel,
+    )
+    logger.info(
+        "RAG question retrieve submission=%s serial=%d recall=%s chunks=%d",
+        submission_id,
+        question.serial_no,
+        recall,
+        len(hits),
+    )
+    return hits
+
+
 async def retrieve_for_section(
     submission_id: uuid.UUID,
     questions: list[KYCQuestion],

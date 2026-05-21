@@ -38,7 +38,7 @@ CORS_PRODUCTION_UI_ORIGIN = "https://kycautomation.bhanu-marreddy.workers.dev"
 # Pipeline concurrency (respect API quota in production).
 ANSWER_CONCURRENCY = 8
 ANSWER_INTER_CALL_DELAY_SECONDS = 0.0
-VALIDATION_CONCURRENCY = 2
+VALIDATION_CONCURRENCY = 32
 
 # When True, send raw PDF/image bytes to validation calls; else extracted text only.
 VALIDATION_ATTACH_DOCUMENTS = False
@@ -65,9 +65,10 @@ RAG_EMBEDDING_DIMENSIONS = 768
 RAG_CHUNK_TARGET_CHARS = 2000
 RAG_CHUNK_OVERLAP_CHARS = 256
 RAG_RETRIEVE_TOP_K = 20
-RAG_RERANK_TOP_K = 6
+RAG_RERANK_TOP_K = 3
 RAG_RECALL_RETRIEVE_TOP_K = 40
-RAG_RECALL_RERANK_TOP_K = 12
+RAG_RECALL_RERANK_TOP_K = 6
+VALIDATION_CHUNKS_PER_QUESTION = 3
 RAG_HYBRID_LEXICAL_WEIGHT = 0.3
 RAG_RRF_K = 60
 RAG_CONTEXTUALIZE = True
@@ -286,7 +287,8 @@ class Settings:
     cors_origins: list[str] = field(default_factory=list)
     answer_concurrency: int = 1
     answer_inter_call_delay_seconds: float = 0.0
-    validation_concurrency: int = 2
+    validation_concurrency: int = 32
+    validation_chunks_per_question: int = VALIDATION_CHUNKS_PER_QUESTION
     validation_attach_documents: bool = False
     validation_max_pdf_bytes: int = VALIDATION_MAX_PDF_BYTES
     validation_max_image_bytes: int = VALIDATION_MAX_IMAGE_BYTES
@@ -389,7 +391,15 @@ def get_settings() -> Settings:
         cors_origins=_resolve_cors_origins(),
         answer_concurrency=ANSWER_CONCURRENCY,
         answer_inter_call_delay_seconds=ANSWER_INTER_CALL_DELAY_SECONDS,
-        validation_concurrency=VALIDATION_CONCURRENCY,
+        validation_concurrency=_env_int_clamped(
+            "VALIDATION_CONCURRENCY", VALIDATION_CONCURRENCY, lo=1, hi=64
+        ),
+        validation_chunks_per_question=_env_int_clamped(
+            "VALIDATION_CHUNKS_PER_QUESTION",
+            VALIDATION_CHUNKS_PER_QUESTION,
+            lo=1,
+            hi=50,
+        ),
         validation_attach_documents=VALIDATION_ATTACH_DOCUMENTS,
         validation_max_pdf_bytes=VALIDATION_MAX_PDF_BYTES,
         validation_max_image_bytes=VALIDATION_MAX_IMAGE_BYTES,
