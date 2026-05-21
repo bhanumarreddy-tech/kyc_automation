@@ -1,0 +1,14 @@
+artifact_uri: file:C:/Users/bhanu.marreddy/Desktop/Work/Projects/kyc_automation/backend/mlruns/664540074198367447/98f7d095e3834a2e935ccc38c603a83d/artifacts
+end_time: 1779394580702
+entry_point_name: ''
+experiment_id: '664540074198367447'
+lifecycle_stage: active
+run_id: 98f7d095e3834a2e935ccc38c603a83d
+run_name: efficient-hen-200
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1779394579489
+status: 3
+tags: []
+user_id: bhanu.marreddy

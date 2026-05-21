@@ -1,0 +1,1 @@
+{"serialNo": null, "recall": false, "query": "registration number CIK", "retrieveTopK": 15, "rerankTopK": 15, "minRelevance": 0.15, "queryEmbeddingPreview": [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1], "queryEmbeddingNorm": 2.771281}

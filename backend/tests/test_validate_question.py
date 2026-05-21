@@ -1,4 +1,4 @@
-"""Per-question validation with top-3 chunk retrieval."""
+"""Per-question validation with top-15 chunk retrieval."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ async def test_validate_question_uses_retrieved_chunks(monkeypatch: pytest.Monke
     answer = AnsweredQuestion(1, "CIK 0000764478", [])
     doc = ParsedDocument("10k.pdf", "pdf", b"", text="full corpus " * 5000)
     sid = uuid.uuid4()
-    chunks = [_sample_chunk(i) for i in range(3)]
+    chunks = [_sample_chunk(i) for i in range(15)]
     invoke_calls: list[list[ParsedDocument]] = []
 
     async def _fake_invoke(**kwargs):  # noqa: ANN003
@@ -90,7 +90,7 @@ async def test_validate_question_uses_retrieved_chunks(monkeypatch: pytest.Monke
     mock_retrieve.assert_awaited_once()
     assert mock_retrieve.await_args.kwargs.get("recall") is False
     assert len(invoke_calls) == 1
-    assert len(invoke_calls[0]) == 3
+    assert len(invoke_calls[0]) == 15
 
 
 @pytest.mark.asyncio

@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 # Gemini ignores ``cache_control`` on blocks.
 _CACHE_MIN_CHARS = 4_500
-_QUESTION_EVIDENCE_CHAR_BUDGET = 8_000
+_QUESTION_EVIDENCE_CHAR_BUDGET = 35_000
 
 
 _SYSTEM_PROMPT = (

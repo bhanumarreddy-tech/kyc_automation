@@ -1,0 +1,11 @@
+execution_duration_ms: 64
+request_preview: '{"serialNo": 1, "sectionNo": 1, "validationPath": "rag", "retrievalUsed":
+  true, "recallUsed": false}'
+request_time: '2026-05-21T20:16:19.420Z'
+response_preview: '{"validation": "Yes", "durationMs": 1083}'
+state: OK
+trace_id: tr-8821e9b041cd03c16e67a7f756846bde
+trace_location:
+  mlflow_experiment:
+    experiment_id: '664540074198367447'
+  type: MLFLOW_EXPERIMENT

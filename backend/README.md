@@ -55,7 +55,7 @@ The validation RAG pipeline can emit **MLflow GenAI traces** for indexing, embed
    ```
 
 4. Browse **Experiments → kyc-rag-validation**. Each pipeline run is one MLflow run; expand traces to see:
-   - **RETRIEVER** spans — query text, hybrid candidate scores, filtered/reranked top-3 hits
+   - **RETRIEVER** spans — query text, hybrid candidate scores, filtered/reranked top-15 hits
    - **RERANKER** spans — token-overlap rerank ordering
    - **EMBEDDING** spans — document/query embedding batches
    - **CHAIN** / **CHAT_MODEL** spans — per-question validation outcomes

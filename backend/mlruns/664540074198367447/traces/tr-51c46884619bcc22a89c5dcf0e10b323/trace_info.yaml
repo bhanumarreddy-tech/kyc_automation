@@ -1,0 +1,14 @@
+execution_duration_ms: 0
+request_preview: '{"serialNo": null, "query": "registration number CIK", "candidateCount":
+  1}'
+request_time: '2026-05-21T20:16:19.562Z'
+response_preview: '{"hits": [{"chunkId": "e4571182-b76d-4777-a8c7-97c3f9f5b76e", "documentId":
+  "10k.pdf", "chunkIndex": 0, "filename": "10k.pdf", "pageStart": 1, "pageEnd": 1,
+  "contentPreview": "CIK 0000764478 Delaware file number 0764478.", "denseScore":
+  0.92, "lexicalScore": 0.1, "fusedScore": 0.4, "rerankScore": 0.4625, "rank": 1}]}'
+state: OK
+trace_id: tr-51c46884619bcc22a89c5dcf0e10b323
+trace_location:
+  mlflow_experiment:
+    experiment_id: '664540074198367447'
+  type: MLFLOW_EXPERIMENT
