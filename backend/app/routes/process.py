@@ -222,6 +222,7 @@ async def process_kyc(
                 duration_ms=duration_ms,
                 reference_urls=ok_urls,
                 pipeline_intelligence=outcome.intelligence,
+                rag_trace=outcome.rag_trace,
             )
             await db_session.commit()
             submission_id_out = str(record.id)
@@ -400,6 +401,7 @@ async def rerun_process_kyc(
             duration_ms=duration_ms,
             reference_urls=ok_urls,
             pipeline_intelligence=outcome.intelligence,
+            rag_trace=outcome.rag_trace,
         )
         await db_session.commit()
         submission_id_out = str(rec.id)
@@ -520,6 +522,7 @@ async def process_kyc_async(
                         duration_ms=duration_ms,
                         reference_urls=ok_urls,
                         pipeline_intelligence=outcome.intelligence,
+                        rag_trace=outcome.rag_trace,
                     )
                     await db_session.commit()
                     submission_id_out = str(record.id)
@@ -691,6 +694,7 @@ async def rerun_process_kyc_async(
                     duration_ms=duration_ms,
                     reference_urls=ok_urls,
                     pipeline_intelligence=outcome.intelligence,
+                    rag_trace=outcome.rag_trace,
                 )
                 await db_session.commit()
                 submission_id_out = str(rec.id)

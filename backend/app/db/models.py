@@ -75,6 +75,7 @@ class KYCSubmission(Base):
     reference_urls: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     pipeline_intelligence: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    rag_trace: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class KYCDocumentChunk(Base):

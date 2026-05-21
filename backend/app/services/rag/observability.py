@@ -240,6 +240,9 @@ def build_retrieval_trace(
         "afterFilterCount": len(filtered_candidates),
         "queryEmbeddingPreview": _embedding_preview(query_embedding or []),
         "queryEmbeddingNorm": _embedding_norm(query_embedding or []),
+        "queryEmbedding": (
+            [round(float(v), 6) for v in query_embedding] if query_embedding else None
+        ),
         "hybridCandidates": fused_preview,
         "hits": reranked_with_rank,
     }

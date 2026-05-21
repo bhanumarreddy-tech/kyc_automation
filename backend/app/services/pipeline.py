@@ -33,7 +33,8 @@ from app.services.source_urls import (
     sanitize_answer_sources_urls,
 )
 from app.services.rag.index import index_submission_documents, rag_indexing_available
-from app.services.mlflow_tracing import pipeline_run
+from app.services.rag.observability import RagTraceCollector
+from app.services.rag.trace_context import reset_collector, set_collector
 from app.services.validate_section import ValidationResult, validate_question
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ class RunPipelineOutcome:
     rows: list[KYCRow]
     section_errors: list[dict[str, Any]] = field(default_factory=list)
     intelligence: dict[str, Any] | None = None
+    rag_trace: dict[str, Any] | None = None
 
 
 async def _emit(
@@ -94,12 +96,14 @@ async def run_pipeline(
     """Run the full KYC pipeline and return rows plus per-section error metadata."""
 
     settings = get_settings()
-    with pipeline_run(
-        company=company,
-        submission_id=submission_id,
-        settings=settings,
-    ):
-        return await _run_pipeline_body(
+    collector: RagTraceCollector | None = None
+    collector_token = None
+    if submission_id is not None and rag_indexing_available(settings):
+        collector = RagTraceCollector(settings=settings, submission_id=submission_id)
+        collector_token = set_collector(collector)
+
+    try:
+        outcome = await _run_pipeline_body(
             company,
             uploads,
             reference_urls,
@@ -108,6 +112,12 @@ async def run_pipeline(
             on_progress=on_progress,
             cancel_event=cancel_event,
         )
+        if collector is not None:
+            outcome.rag_trace = collector.to_dict()
+        return outcome
+    finally:
+        if collector_token is not None:
+            reset_collector(collector_token)
 
 
 async def _run_pipeline_body(
@@ -327,6 +337,12 @@ async def _run_pipeline_body(
                 "detail": f"Running document validation ({n_questions} questions)",
             },
         )
+
+        from app.services.rag.trace_context import get_collector
+
+        collector = get_collector()
+        if collector is not None:
+            collector.begin_validation_phase()
 
         async def _bounded_validate_question(question: KYCQuestion) -> ValidationResult:
             async with validation_sem:

@@ -6,6 +6,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import text
 
@@ -170,6 +171,7 @@ async def retrieve_for_query(
     min_relevance: float | None = None,
     serial_no: int | None = None,
     recall: bool = False,
+    question_ctx: dict[str, Any] | None = None,
 ) -> list[RetrievedChunk]:
     top_k = retrieve_top_k or settings.rag_retrieve_top_k
     rerank_k = rerank_top_k or settings.rag_rerank_top_k
@@ -205,26 +207,32 @@ async def retrieve_for_query(
     reranked.sort(key=lambda c: -c.rerank_score)
     hits = reranked[:rerank_k]
 
-    from app.services.mlflow_tracing import log_rerank_pass, log_retrieval
+    if question_ctx:
+        from app.services.rag.observability import build_retrieval_trace
+        from app.services.rag.trace_context import get_collector
 
-    log_retrieval(
-        query=query,
-        recall=recall,
-        serial_no=serial_no,
-        retrieve_top_k=top_k,
-        rerank_top_k=rerank_k,
-        min_relevance=min_rel,
-        hybrid_candidates=hybrid_candidates,
-        filtered_candidates=filtered_candidates,
-        hits=hits,
-        query_embedding=query_embedding,
-    )
-    log_rerank_pass(
-        query=query,
-        serial_no=serial_no,
-        candidates=filtered_candidates,
-        hits=hits,
-    )
+        collector = get_collector()
+        if collector is not None:
+            trace = build_retrieval_trace(
+                query=query,
+                retrieve_top_k=top_k,
+                rerank_top_k=rerank_k,
+                min_relevance=min_rel,
+                hybrid_candidates=hybrid_candidates,
+                filtered_candidates=filtered_candidates,
+                hits=hits,
+                recall=recall,
+                query_embedding=query_embedding,
+            )
+            collector.record_retrieval(
+                serial_no=int(question_ctx["serialNo"]),
+                section_no=int(question_ctx["sectionNo"]),
+                section_name=str(question_ctx["sectionName"]),
+                question=str(question_ctx["question"]),
+                answer_preview=str(question_ctx.get("answerPreview") or ""),
+                recall=recall,
+                trace=trace,
+            )
     return hits
 
 
@@ -260,6 +268,13 @@ async def retrieve_for_question(
         min_relevance=min_rel,
         serial_no=question.serial_no,
         recall=recall,
+        question_ctx={
+            "serialNo": question.serial_no,
+            "sectionNo": question.section_no,
+            "sectionName": question.section_name,
+            "question": question.question,
+            "answerPreview": answer.answer if answer.answer else "Not found",
+        },
     )
     logger.info(
         "RAG question retrieve submission=%s serial=%d recall=%s chunks=%d",

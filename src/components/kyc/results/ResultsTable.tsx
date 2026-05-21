@@ -20,6 +20,7 @@ import { AuditLogDialog } from "./AuditLogDialog";
 import { EvidenceDrawer } from "./EvidenceDrawer";
 import { SplitDetailPanel } from "./EvidencePanel";
 import { PipelineIntelligenceStrip } from "./PipelineIntelligenceStrip";
+import { RagObservabilityPanel } from "./RagObservabilityPanel";
 import { ResultsTableFilters } from "./ResultsTableFilters";
 import { SectionRows } from "./SectionRows";
 import {
@@ -201,6 +202,10 @@ export function ResultsTable({
         submissionId={submissionMeta?.submissionId}
         intelligence={pipelineIntelligence}
         rows={rows}
+      />
+      <RagObservabilityPanel
+        submissionId={submissionMeta?.submissionId}
+        companyName={companyName}
       />
 
       <div className="flex flex-wrap gap-2 items-center">

@@ -122,7 +122,6 @@ Verify after deploy: `npm run smoke:staging` or `npm run smoke:production`.
 
 - **Frontend (Cloudflare Workers):** Use `npm run deploy:staging` or `npm run deploy:production`; do not mix builds across environments.
 - **Backend (Railway):** Set **`APP_ENV`** to match the paired Workers URL. Override with **`CORS_ALLOWED_ORIGINS`** for custom domains.
-- **MLflow UI (Railway):** Optional second service using `backend/Dockerfile.mlflow`; see [backend/README.md](backend/README.md#mlflow-ui-on-railway-recommended-for-stagingproduction).
 - **Custom domains:** Add origins to **`CORS_ALLOWED_ORIGINS`** on the matching Railway service.
 
 ## License / project origin

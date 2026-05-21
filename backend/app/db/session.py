@@ -91,6 +91,12 @@ async def _ensure_postgres_addon_columns(conn) -> None:
     )
     await conn.execute(
         text(
+            "ALTER TABLE kyc_submissions "
+            "ADD COLUMN IF NOT EXISTS rag_trace JSONB"
+        )
+    )
+    await conn.execute(
+        text(
             "ALTER TABLE kyc_submission_metadata "
             "ADD COLUMN IF NOT EXISTS workflow_state JSONB NOT NULL DEFAULT '{}'::jsonb"
         )

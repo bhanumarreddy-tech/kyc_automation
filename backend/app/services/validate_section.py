@@ -543,21 +543,6 @@ async def _invoke_validation_gemini_once(
 
     by_serial = _parse_validation_payload(data, known_documents, questions)
     out = _gather_validation_results_placeholder(by_serial, questions)
-
-    if len(questions) == 1:
-        from app.services.mlflow_tracing import log_gemini_validation_call
-
-        q = questions[0]
-        vr = out[0]
-        log_gemini_validation_call(
-            serial_no=q.serial_no,
-            section_no=section_no,
-            model=settings.gemini_validation_model,
-            shard_hint=shard_hint,
-            doc_count=len(shard_docs),
-            validation=vr.validation,
-            source_count=len(vr.validation_sources),
-        )
     return out
 
 
@@ -853,17 +838,21 @@ async def validate_question(
     enriched = _enrich_validation_results_urls([merged], url_idx)
     result = enriched[0]
 
-    from app.services.mlflow_tracing import log_validation_question
+    from app.services.rag.trace_context import get_collector
 
-    log_validation_question(
-        serial_no=question.serial_no,
-        section_no=question.section_no,
-        validation_path=validation_path,
-        validation=result.validation,
-        retrieval_used=retrieval_used,
-        duration_ms=int((time.perf_counter() - started) * 1000),
-        recall_used=recall_used,
-    )
+    collector = get_collector()
+    if collector is not None:
+        collector.record_question_outcome(
+            serial_no=question.serial_no,
+            section_no=question.section_no,
+            section_name=question.section_name,
+            question=question.question,
+            answer_preview=answer.answer if answer.answer else "Not found",
+            validation_path=validation_path,
+            validation=result.validation,
+            retrieval_used=retrieval_used,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
 
     logger.info(
         "Validation question serial=%d section=%d for '%s' finished model=%s retrieval=%s",

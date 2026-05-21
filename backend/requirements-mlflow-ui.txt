@@ -1,6 +1,0 @@
-# Allow MLflow to match the database migration state.
-# The database was migrated by a newer version — pinning to 2.22.5 causes
-# "Can't locate revision '7d34483879f0'". Use >= to pick up the version
-# that created that revision.
-mlflow>=2.22.5
-psycopg2-binary>=2.9.9

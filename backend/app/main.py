@@ -21,13 +21,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.config import get_settings
-from app.services.mlflow_tracing import configure as configure_mlflow_tracing
 from app.db.session import db_session_maker, dispose_database, init_database
 from app.middleware.request_logging import RequestLoggingMiddleware
 from app.routes import history as history_route
 from app.routes import intake as intake_route
 from app.routes import narrative as narrative_route
 from app.routes import process as process_route
+from app.routes import rag_observability as rag_observability_route
 
 settings = get_settings()
 _log_level = getattr(logging, settings.log_level, None)
@@ -41,7 +41,6 @@ _http_logger = logging.getLogger("app.http")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_mlflow_tracing()
     await init_database()
     yield
     await dispose_database()
@@ -121,5 +120,6 @@ async def healthcheck() -> dict[str, str]:
 
 app.include_router(process_route.router)
 app.include_router(history_route.router)
+app.include_router(rag_observability_route.router)
 app.include_router(intake_route.router)
 app.include_router(narrative_route.router)

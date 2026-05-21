@@ -36,29 +36,10 @@ async def index_submission_documents(
     s = settings or get_settings()
     started = time.perf_counter()
     if not rag_indexing_available(s):
-        from app.services.mlflow_tracing import log_indexing
-
-        log_indexing(
-            chunk_count=0,
-            document_count=0,
-            duration_ms=0,
-            skipped=True,
-            skip_reason="rag_unavailable",
-        )
         return 0
 
-    started = time.perf_counter()
     maker = db_session_maker()
     if maker is None:
-        from app.services.mlflow_tracing import log_indexing
-
-        log_indexing(
-            chunk_count=0,
-            document_count=0,
-            duration_ms=0,
-            skipped=True,
-            skip_reason="database_unavailable",
-        )
         return 0
 
     text_docs = [
@@ -67,15 +48,6 @@ async def index_submission_documents(
         if (d.text or "").strip() and not d.error
     ]
     if not text_docs:
-        from app.services.mlflow_tracing import log_indexing
-
-        log_indexing(
-            chunk_count=0,
-            document_count=0,
-            duration_ms=int((time.perf_counter() - started) * 1000),
-            skipped=True,
-            skip_reason="no_text_documents",
-        )
         return 0
 
     drafts = chunk_parsed_documents(
@@ -85,15 +57,6 @@ async def index_submission_documents(
         small_doc_full_text_chars=s.rag_small_doc_full_text_chars,
     )
     if not drafts:
-        from app.services.mlflow_tracing import log_indexing
-
-        log_indexing(
-            chunk_count=0,
-            document_count=len(text_docs),
-            duration_ms=int((time.perf_counter() - started) * 1000),
-            skipped=True,
-            skip_reason="no_chunks_produced",
-        )
         return 0
 
     contextualized = await contextualize_chunks(company, drafts, s)
@@ -159,13 +122,27 @@ async def index_submission_documents(
         len(rows),
         len({document_stable_id(d) for d in text_docs}),
     )
-    from app.services.mlflow_tracing import log_indexing
 
-    log_indexing(
-        chunk_count=len(rows),
-        document_count=len({document_stable_id(d) for d in text_docs}),
-        duration_ms=int((time.perf_counter() - started) * 1000),
-    )
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    doc_count = len({document_stable_id(d) for d in text_docs})
+
+    from app.services.rag.trace_context import get_collector
+
+    collector = get_collector()
+    if collector is not None:
+        collector.record_indexing(
+            chunk_count=len(rows),
+            document_count=doc_count,
+            documents=[
+                {
+                    "filename": d.filename,
+                    "documentId": document_stable_id(d),
+                    "kind": d.kind,
+                }
+                for d in text_docs
+            ],
+            duration_ms=duration_ms,
+        )
     return len(rows)
 
 

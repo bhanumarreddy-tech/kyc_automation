@@ -79,11 +79,6 @@ RAG_RECALL_MIN_RELEVANCE_SCORE = 0.08
 
 ENABLE_PROMPT_CACHING = True
 
-# MLflow GenAI tracing (local UI: mlflow ui --port 5000)
-MLFLOW_TRACING_ENABLED = False
-MLFLOW_TRACKING_URI = "file:./mlruns"
-MLFLOW_EXPERIMENT_NAME = "kyc-rag-validation"
-
 GEMINI_OVERLOAD_EXTRA_ATTEMPTS = 3
 GEMINI_OVERLOAD_BASE_DELAY_SECONDS = 10.0
 
@@ -323,9 +318,6 @@ class Settings:
     rag_min_relevance_score: float = RAG_MIN_RELEVANCE_SCORE
     rag_recall_min_relevance_score: float = RAG_RECALL_MIN_RELEVANCE_SCORE
     enable_prompt_caching: bool = ENABLE_PROMPT_CACHING
-    mlflow_tracing_enabled: bool = MLFLOW_TRACING_ENABLED
-    mlflow_tracking_uri: str = MLFLOW_TRACKING_URI
-    mlflow_experiment_name: str = MLFLOW_EXPERIMENT_NAME
     overload_extra_attempts: int = GEMINI_OVERLOAD_EXTRA_ATTEMPTS
     overload_base_delay_seconds: float = GEMINI_OVERLOAD_BASE_DELAY_SECONDS
     s3_endpoint_url: str | None = None
@@ -484,15 +476,6 @@ def get_settings() -> Settings:
             or RAG_RECALL_MIN_RELEVANCE_SCORE
         ),
         enable_prompt_caching=ENABLE_PROMPT_CACHING,
-        mlflow_tracing_enabled=_env_bool("MLFLOW_TRACING_ENABLED", MLFLOW_TRACING_ENABLED),
-        mlflow_tracking_uri=(
-            os.environ.get("MLFLOW_TRACKING_URI", MLFLOW_TRACKING_URI).strip()
-            or MLFLOW_TRACKING_URI
-        ),
-        mlflow_experiment_name=(
-            os.environ.get("MLFLOW_EXPERIMENT_NAME", MLFLOW_EXPERIMENT_NAME).strip()
-            or MLFLOW_EXPERIMENT_NAME
-        ),
         overload_extra_attempts=GEMINI_OVERLOAD_EXTRA_ATTEMPTS,
         overload_base_delay_seconds=GEMINI_OVERLOAD_BASE_DELAY_SECONDS,
         s3_endpoint_url=s3_endpoint,

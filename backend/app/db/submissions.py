@@ -31,6 +31,7 @@ async def ensure_submission_stub(
         reference_urls=None,
         duration_ms=None,
         pipeline_intelligence=None,
+        rag_trace=None,
     )
     session.add(record)
     await session.flush()
@@ -48,6 +49,7 @@ async def create_kyc_submission(
     duration_ms: int,
     reference_urls: list[str] | None = None,
     pipeline_intelligence: dict | None = None,
+    rag_trace: dict | None = None,
 ) -> KYCSubmission:
     payload = [r.model_dump(mode="json", by_alias=True) for r in rows]
     doc_meta = (
@@ -64,6 +66,7 @@ async def create_kyc_submission(
         existing.reference_urls = ref_meta
         existing.duration_ms = duration_ms
         existing.pipeline_intelligence = pipeline_intelligence
+        existing.rag_trace = rag_trace
         await session.flush()
         await session.refresh(existing)
         return existing
@@ -75,6 +78,7 @@ async def create_kyc_submission(
         reference_urls=ref_meta,
         duration_ms=duration_ms,
         pipeline_intelligence=pipeline_intelligence,
+        rag_trace=rag_trace,
     )
     session.add(record)
     await session.flush()
