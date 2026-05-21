@@ -12,6 +12,16 @@ ENV MKL_NUM_THREADS=1
 ENV NUMEXPR_NUM_THREADS=1
 ENV VECLIB_MAXIMUM_THREADS=1
 ENV MLFLOW_UI_WORKERS=1
+# Reduce glibc heap fragmentation — keeps RSS lower after import-time allocations
+# by numpy/scipy/psycopg2 that MLflow pulls in transitively.
+ENV MALLOC_TRIM_THRESHOLD_=131072
+# Strip docstrings and assert statements from .pyc files to shrink the
+# in-memory bytecode footprint (equivalent to running python -OO).
+ENV PYTHONOPTIMIZE=2
+# MINIMUM MEMORY REQUIREMENT: this service needs at least 1.5 GB RAM on Railway.
+# MLflow + psycopg2 + Python 3.12 runtime overhead peaks at ~1.1–1.3 GB at
+# startup. With less than 1.5 GB the kernel OOM-killer will SIGKILL the process
+# (exit code -9) within seconds of launch.
 
 COPY requirements-mlflow-ui.txt .
 RUN pip install --no-cache-dir -r requirements-mlflow-ui.txt
