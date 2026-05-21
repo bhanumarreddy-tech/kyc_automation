@@ -48,8 +48,11 @@ The frontend (`npm run dev` at the repo root, default port 8080) proxies all `/a
 ## Configuration
 
 Non-secret tuning (Gemini answer/validation model IDs, validation limits,
-concurrency, overload backoff, CORS allow-list, and similar) lives in the
-constants at the top of [`app/config.py`](app/config.py).
+concurrency, overload backoff, and similar) lives in the constants at the top
+of [`app/config.py`](app/config.py).
+
+CORS is resolved from **`APP_ENV`** (`staging` / `production`) or an optional
+**`CORS_ALLOWED_ORIGINS`** comma-separated override — see [.env.example](.env.example).
 
 Secrets in `.env` (see [.env.example](.env.example)):
 

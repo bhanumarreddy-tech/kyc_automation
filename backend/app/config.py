@@ -24,13 +24,16 @@ GEMINI_MODEL_ANSWER = "gemini-3-flash-preview"
 GEMINI_MODEL_VALIDATION = "gemini-3-flash-preview"
 LOG_LEVEL = "INFO"
 
-CORS_ALLOWED_ORIGINS: tuple[str, ...] = (
+CORS_LOCAL_ORIGINS: tuple[str, ...] = (
     "http://localhost:8080",
     "http://localhost:5173",
     "http://127.0.0.1:8080",
     "http://127.0.0.1:5173",
-    "https://kycautomation.bhanu-marreddy.workers.dev",
 )
+
+# Cloudflare Workers SPA origins — one UI per deploy environment.
+CORS_STAGING_UI_ORIGIN = "https://kyc-automation-staging.bhanu-marreddy.workers.dev"
+CORS_PRODUCTION_UI_ORIGIN = "https://kycautomation.bhanu-marreddy.workers.dev"
 
 # Pipeline concurrency (respect API quota in production).
 ANSWER_CONCURRENCY = 8
@@ -217,6 +220,35 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
+def _parse_csv_origins(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _resolve_cors_origins() -> list[str]:
+    """Resolve browser origins allowed to call this API.
+
+    Set ``CORS_ALLOWED_ORIGINS`` (comma-separated) to override. Otherwise
+    ``APP_ENV`` selects the matching Cloudflare Workers UI origin:
+
+    - ``staging`` → local dev ports + staging Workers URL
+    - ``production`` → local dev ports + production Workers URL
+    - unset (local) → local dev ports + both cloud UI origins
+    """
+    override = os.environ.get("CORS_ALLOWED_ORIGINS", "").strip()
+    if override:
+        return _parse_csv_origins(override)
+
+    origins = list(CORS_LOCAL_ORIGINS)
+    app_env = os.environ.get("APP_ENV", "").strip().lower()
+    if app_env == "staging":
+        origins.append(CORS_STAGING_UI_ORIGIN)
+    elif app_env == "production":
+        origins.append(CORS_PRODUCTION_UI_ORIGIN)
+    else:
+        origins.extend((CORS_STAGING_UI_ORIGIN, CORS_PRODUCTION_UI_ORIGIN))
+    return origins
+
+
 @dataclass(frozen=True)
 class Settings:
     gemini_api_key: str
@@ -311,7 +343,7 @@ def get_settings() -> Settings:
         gemini_validation_model=GEMINI_MODEL_VALIDATION,
         database_url=database_url,
         log_level=LOG_LEVEL,
-        cors_origins=list(CORS_ALLOWED_ORIGINS),
+        cors_origins=_resolve_cors_origins(),
         answer_concurrency=ANSWER_CONCURRENCY,
         answer_inter_call_delay_seconds=ANSWER_INTER_CALL_DELAY_SECONDS,
         validation_concurrency=VALIDATION_CONCURRENCY,
