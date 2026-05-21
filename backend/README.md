@@ -78,8 +78,9 @@ Deploy a **second Railway service** that only serves the MLflow UI, using the sa
    - Optional: `MLFLOW_SERVE_ARTIFACTS=true` to proxy artifact downloads (off by default to save memory)
    - Optional: `GIT_PYTHON_REFRESH=quiet` (silences Git warnings in the container)
 4. **Resources:** allocate at least **512 MB RAM** (1 GB recommended). The default single-worker config is tuned for small Railway plans.
-5. **Networking → Generate domain** (e.g. `https://kyc-mlflow.up.railway.app`).
-6. Open the domain in a browser → **Experiments → kyc-rag-validation**.
+5. **Health check** (Settings → Deploy → Health Check Path): set **`/health`**. Railway sends `Host: healthcheck.railway.app`; the startup script adds that host automatically on Railway.
+6. **Networking → Generate domain** (e.g. `https://kyc-mlflow.up.railway.app`).
+7. Open the domain in a browser → **Experiments → kyc-rag-validation**.
 
 Local Docker equivalent:
 

@@ -115,9 +115,16 @@ def _allowed_hosts() -> str:
         return explicit
 
     hosts = ["localhost", "127.0.0.1"]
-    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
-    if railway_domain:
-        hosts.append(railway_domain)
+    if _running_on_railway():
+        # Railway probes with Host: healthcheck.railway.app — without this the
+        # deploy health check fails and the container restarts in a loop.
+        hosts.append("healthcheck.railway.app")
+
+    for env_name in ("RAILWAY_PUBLIC_DOMAIN", "RAILWAY_PRIVATE_DOMAIN"):
+        domain = os.environ.get(env_name, "").strip()
+        if domain and domain not in hosts:
+            hosts.append(domain)
+
     return ",".join(hosts)
 
 
@@ -142,7 +149,8 @@ def main() -> None:
 
     print(
         f"Starting MLflow UI on 0.0.0.0:{port} "
-        f"backend={_redact_url(uri)} workers={workers}"
+        f"backend={_redact_url(uri)} workers={workers} "
+        f"allowed_hosts={allowed_hosts}"
     )
     if _is_file_tracking_uri(uri):
         print(
