@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import ssl
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -15,6 +16,8 @@ from sqlalchemy.ext.asyncio import (
 
 from app.config import get_settings
 from app.db.models import Base
+
+logger = logging.getLogger(__name__)
 
 _engine: AsyncEngine | None = None
 _async_session_maker: async_sessionmaker[AsyncSession] | None = None
@@ -111,9 +114,14 @@ async def init_database() -> None:
 
     settings = get_settings()
     if not settings.database_url:
+        logger.warning(
+            "Postgres URL not resolved (set DATABASE_URL or DATABASE_PUBLIC_URL on Railway, "
+            "or DATABASE_PUBLIC_URL locally). KYC runs will not appear in History."
+        )
         return
 
     raw_url = _async_database_url(settings.database_url)
+    logger.info("Postgres configured for submission history")
     async_url, connect_args = _asyncpg_safe_url(raw_url)
     _engine = create_async_engine(async_url, echo=False, connect_args=connect_args)
     _async_session_maker = async_sessionmaker(

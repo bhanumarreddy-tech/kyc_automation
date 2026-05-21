@@ -18,8 +18,10 @@ from fastapi.exception_handlers import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
+from sqlalchemy import text
+
 from app.config import get_settings
-from app.db.session import dispose_database, init_database
+from app.db.session import db_session_maker, dispose_database, init_database
 from app.middleware.request_logging import RequestLoggingMiddleware
 from app.routes import history as history_route
 from app.routes import intake as intake_route
@@ -93,7 +95,26 @@ app.add_middleware(RequestLoggingMiddleware)
 
 @app.get("/api/health")
 async def healthcheck() -> dict[str, str]:
-    return {"status": "ok"}
+    """Liveness plus whether submission History can persist (Postgres)."""
+    out: dict[str, str] = {"status": "ok"}
+    settings = get_settings()
+    if not settings.database_url:
+        out["database"] = "disabled"
+        return out
+
+    maker = db_session_maker()
+    if maker is None:
+        out["database"] = "disabled"
+        return out
+
+    try:
+        async with maker() as session:
+            await session.execute(text("SELECT 1"))
+        out["database"] = "connected"
+    except Exception:
+        _http_logger.exception("health database probe failed")
+        out["database"] = "error"
+    return out
 
 
 app.include_router(process_route.router)
