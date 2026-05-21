@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import sys
 from urllib.parse import quote_plus
 
@@ -127,6 +126,30 @@ def _artifact_root() -> str:
     return os.environ.get("MLFLOW_DEFAULT_ARTIFACT_ROOT", "file:///tmp/mlartifacts").strip()
 
 
+def _allowed_hosts() -> str | None:
+    explicit = os.environ.get("MLFLOW_ALLOWED_HOSTS", "").strip()
+    if explicit:
+        return explicit
+    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if domain:
+        return f"localhost,127.0.0.1,{domain}"
+    if _running_on_railway():
+        return "*"
+    return None
+
+
+def _cors_allowed_origins() -> str | None:
+    explicit = os.environ.get("MLFLOW_CORS_ALLOWED_ORIGINS", "").strip()
+    if explicit:
+        return explicit
+    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if domain:
+        return f"https://{domain}"
+    if _running_on_railway():
+        return "*"
+    return None
+
+
 def main() -> None:
     uri = resolve_tracking_uri()
     port = os.environ.get("PORT", "5000").strip() or "5000"
@@ -145,6 +168,11 @@ def main() -> None:
         print(
             "Railway: ensure Networking → Target port matches $PORT "
             f"(currently {port}). Health check path: /health",
+            file=sys.stderr,
+        )
+        print(
+            "Railway: allocate at least 1 GB RAM for this service. "
+            "Exit code -9 (SIGKILL) on 512 MB usually means OOM.",
             file=sys.stderr,
         )
     if _is_file_tracking_uri(uri):
@@ -185,13 +213,18 @@ def main() -> None:
             "--gunicorn-opts",
             "--timeout 120 --graceful-timeout 30 --log-level info",
         ]
+    else:
+        allowed_hosts = _allowed_hosts()
+        if allowed_hosts:
+            cmd += ["--allowed-hosts", allowed_hosts]
+        cors_origins = _cors_allowed_origins()
+        if cors_origins:
+            cmd += ["--cors-allowed-origins", cors_origins]
     if not serve_artifacts:
         cmd.append("--no-serve-artifacts")
 
-    completed = subprocess.run(cmd, check=False)
-    if completed.returncode != 0:
-        print(f"mlflow ui exited with code {completed.returncode}", file=sys.stderr)
-        raise SystemExit(completed.returncode)
+    # Replace this wrapper process so we do not keep two Python runtimes in memory.
+    os.execvp(cmd[0], cmd)
 
 
 if __name__ == "__main__":

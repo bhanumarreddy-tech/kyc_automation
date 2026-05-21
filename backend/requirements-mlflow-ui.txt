@@ -4,4 +4,3 @@
 # that created that revision.
 mlflow>=2.22.5
 psycopg2-binary>=2.9.9
-gunicorn>=22.0.0
