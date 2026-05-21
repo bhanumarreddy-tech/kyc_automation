@@ -18,3 +18,20 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+  # Optional: MLflow GenAI trace UI (docker compose --profile observability up)
+  mlflow:
+    profiles:
+      - observability
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.mlflow
+    env_file:
+      - ./backend/.env
+    ports:
+      - "5000:5000"
+    environment:
+      PORT: "5000"
+    volumes:
+      - ./backend/mlruns:/app/mlruns
+    restart: unless-stopped

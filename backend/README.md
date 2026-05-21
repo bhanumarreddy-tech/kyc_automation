@@ -61,3 +61,27 @@ The validation RAG pipeline can emit **MLflow GenAI traces** for indexing, embed
    - **CHAIN** / **CHAT_MODEL** spans — per-question validation outcomes
 
 Traces are logged asynchronously (`mlflow.config.enable_async_logging()`) to keep pipeline latency low. Point `MLFLOW_TRACKING_URI` at a remote MLflow tracking server for shared team visibility.
+
+### MLflow UI on Railway (recommended for staging/production)
+
+Deploy a **second Railway service** that only serves the MLflow UI, using the same Postgres tracking store as the API.
+
+1. In your Railway project, **New → GitHub Repo** (same repository) or **Duplicate Service**.
+2. Service settings:
+   - **Root directory:** `backend`
+   - **Dockerfile path:** `Dockerfile.mlflow`
+3. **Variables** (link the Postgres plugin, same as the API):
+   - `MLFLOW_TRACKING_URI` — Postgres URL (must match the API), e.g. `postgresql://…?sslmode=require`
+   - Or omit it and rely on `DATABASE_URL` / `DATABASE_PUBLIC_URL` from the linked plugin
+   - Optional: `GIT_PYTHON_REFRESH=quiet` (silences Git warnings in the container)
+4. **Networking → Generate domain** (e.g. `https://kyc-mlflow.up.railway.app`).
+5. Open the domain in a browser → **Experiments → kyc-rag-validation**.
+
+Local Docker equivalent:
+
+```powershell
+docker compose --profile observability up -d mlflow
+# http://localhost:5000  (uses backend/.env; for file storage set MLFLOW_TRACKING_URI=file:/app/mlruns)
+```
+
+**Security:** MLflow UI has no built-in authentication. Restrict the Railway URL (team-only, VPN, or auth proxy) before sharing it widely.
