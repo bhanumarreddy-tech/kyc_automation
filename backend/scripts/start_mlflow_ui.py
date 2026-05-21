@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import sys
 from urllib.parse import quote_plus
 
@@ -122,12 +121,29 @@ def _allowed_hosts() -> str:
     return ",".join(hosts)
 
 
+def _workers() -> str:
+    return os.environ.get("MLFLOW_UI_WORKERS", "1").strip() or "1"
+
+
+def _serve_artifacts() -> bool:
+    raw = os.environ.get("MLFLOW_SERVE_ARTIFACTS", "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return False
+
+
 def main() -> None:
     uri = resolve_tracking_uri()
     port = os.environ.get("PORT", "5000").strip() or "5000"
     allowed_hosts = _allowed_hosts()
+    workers = _workers()
 
-    print(f"Starting MLflow UI on 0.0.0.0:{port} backend={_redact_url(uri)}")
+    print(
+        f"Starting MLflow UI on 0.0.0.0:{port} "
+        f"backend={_redact_url(uri)} workers={workers}"
+    )
     if _is_file_tracking_uri(uri):
         print(
             "warning: using file-based MLflow store; link Postgres on Railway for shared traces",
@@ -141,6 +157,8 @@ def main() -> None:
         "0.0.0.0",
         "--port",
         port,
+        "--workers",
+        workers,
         "--backend-store-uri",
         uri,
         "--registry-store-uri",
@@ -148,7 +166,10 @@ def main() -> None:
         "--allowed-hosts",
         allowed_hosts,
     ]
-    subprocess.run(cmd, check=True)
+    if not _serve_artifacts():
+        cmd.append("--no-serve-artifacts")
+
+    os.execvp(cmd[0], cmd)
 
 
 if __name__ == "__main__":
