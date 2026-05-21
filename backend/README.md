@@ -71,8 +71,9 @@ Deploy a **second Railway service** that only serves the MLflow UI, using the sa
    - **Root directory:** `backend`
    - **Dockerfile path:** `Dockerfile.mlflow`
 3. **Variables** (link the Postgres plugin, same as the API):
-   - `MLFLOW_TRACKING_URI` — Postgres URL (must match the API), e.g. `postgresql://…?sslmode=require`
-   - Or omit it and rely on `DATABASE_URL` / `DATABASE_PUBLIC_URL` from the linked plugin
+   - **Link Postgres** — the UI prefers `DATABASE_URL` / `DATABASE_PUBLIC_URL` over `MLFLOW_TRACKING_URI`, so a shared `MLFLOW_TRACKING_URI=file:./mlruns` from the API will not break the UI service.
+   - Optional override: `MLFLOW_TRACKING_URI=postgresql://…` (explicit Postgres URL)
+   - Optional: `MLFLOW_ALLOWED_HOSTS=your-domain.up.railway.app` if the default `RAILWAY_PUBLIC_DOMAIN` is insufficient
    - Optional: `GIT_PYTHON_REFRESH=quiet` (silences Git warnings in the container)
 4. **Networking → Generate domain** (e.g. `https://kyc-mlflow.up.railway.app`).
 5. Open the domain in a browser → **Experiments → kyc-rag-validation**.

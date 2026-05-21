@@ -9,9 +9,8 @@ ENV PORT=5000
 COPY requirements-mlflow-ui.txt .
 RUN pip install --no-cache-dir -r requirements-mlflow-ui.txt
 
-COPY scripts/start_mlflow_ui.sh /app/start_mlflow_ui.sh
-RUN chmod +x /app/start_mlflow_ui.sh
+COPY scripts/start_mlflow_ui.py /app/start_mlflow_ui.py
 
 EXPOSE 5000
 
-CMD ["/app/start_mlflow_ui.sh"]
+CMD ["python", "/app/start_mlflow_ui.py"]
