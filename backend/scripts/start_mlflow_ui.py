@@ -8,6 +8,15 @@ import re
 import sys
 from urllib.parse import quote_plus
 
+# ---------------------------------------------------------------------------
+# Memory constants
+# ---------------------------------------------------------------------------
+# Observed peak RSS at startup: ~1.1–1.3 GB (MLflow + psycopg2 + Python 3.12).
+# We warn at 1.2 GB available and hard-warn at 1.0 GB so operators know to
+# upgrade their Railway plan before the kernel OOM-kills the process.
+_MEMORY_WARN_GB = 1.2
+_MEMORY_CRITICAL_GB = 1.0
+
 
 def _env_first(*names: str) -> str:
     for name in names:
@@ -150,6 +159,72 @@ def _cors_allowed_origins() -> str | None:
     return None
 
 
+def _check_available_memory() -> None:
+    """Emit diagnostics and warn if available RAM is below safe thresholds.
+
+    Uses /proc/meminfo (Linux) when available; falls back to the ``resource``
+    module for a rough RSS-based estimate.  The check is advisory only — we
+    never abort here, because the operator may have already accounted for swap
+    or cgroup limits that /proc/meminfo does not reflect.
+    """
+    available_gb: float | None = None
+
+    # Primary: /proc/meminfo gives MemAvailable which accounts for reclaimable
+    # page-cache and is the most accurate "how much can a new process use" figure.
+    try:
+        with open("/proc/meminfo", "r") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    kb = int(line.split()[1])
+                    available_gb = kb / (1024 * 1024)
+                    break
+    except OSError:
+        pass
+
+    # Fallback: resource.getrlimit(RLIMIT_AS) gives the virtual-address limit
+    # set by the cgroup; not perfect but better than nothing on non-Linux hosts.
+    if available_gb is None:
+        try:
+            import resource
+
+            soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+            limit = hard if hard != resource.RLIM_INFINITY else soft
+            if limit not in (resource.RLIM_INFINITY, -1):
+                available_gb = limit / (1024 ** 3)
+        except Exception:
+            pass
+
+    if available_gb is None:
+        print(
+            "memory-check: could not determine available RAM "
+            "(non-Linux host or /proc/meminfo unavailable)",
+            file=sys.stderr,
+        )
+        return
+
+    label = f"{available_gb:.2f} GB"
+    if available_gb < _MEMORY_CRITICAL_GB:
+        print(
+            f"CRITICAL: only {label} RAM available — MLflow UI will almost "
+            f"certainly be OOM-killed (exit code -9) before it can serve "
+            f"requests. Upgrade this Railway service to at least 1.5 GB RAM.",
+            file=sys.stderr,
+        )
+    elif available_gb < _MEMORY_WARN_GB:
+        print(
+            f"WARNING: {label} RAM available — MLflow UI startup peak is "
+            f"~1.1–1.3 GB. The process may be OOM-killed (exit code -9). "
+            f"Recommended minimum: 1.5 GB RAM on Railway.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"memory-check: {label} available — OK "
+            f"(minimum recommended: {_MEMORY_WARN_GB} GB)",
+            file=sys.stderr,
+        )
+
+
 def main() -> None:
     uri = resolve_tracking_uri()
     port = os.environ.get("PORT", "5000").strip() or "5000"
@@ -171,10 +246,11 @@ def main() -> None:
             file=sys.stderr,
         )
         print(
-            "Railway: allocate at least 1 GB RAM for this service. "
-            "Exit code -9 (SIGKILL) on 512 MB usually means OOM.",
+            "Railway: this service requires at least 1.5 GB RAM. "
+            "Exit code -9 (SIGKILL) means OOM — upgrade your plan if this occurs.",
             file=sys.stderr,
         )
+    _check_available_memory()
     if _is_file_tracking_uri(uri):
         print(
             "warning: using file-based MLflow store; link Postgres on Railway for shared traces",
