@@ -36,12 +36,17 @@ Configuration details: [`app/config.py`](app/config.py) and [`.env.example`](.en
 
 ## RAG observability
 
-The validation RAG pipeline records per-question retrieval traces (hybrid dense + lexical + RRF fusion, reranking, validation path) in Postgres as `rag_trace` on each submission.
+The validation RAG pipeline uses **state-of-the-art retrieval techniques** and records traces in Postgres (`rag_trace`):
 
-After a run completes, open **RAG explorer** on the results screen in the frontend. It provides:
+| Technique | Purpose |
+|-----------|---------|
+| Contextual retrieval | Prepends document context before embedding |
+| Hybrid dense + lexical | pgvector cosine + Postgres `ts_rank` |
+| Reciprocal Rank Fusion | Merges ranked lists without score calibration |
+| Multi-query retrieval | Question + keyword query variants fused with RRF |
+| Gemini listwise rerank | Cross-encoder-style reranking of top candidates |
+| MMR diversity | Reduces redundant chunks from the same passage |
 
-- **Overview** — indexing stats, validation path breakdown, RAG config snapshot
-- **Embedding map** — 2D PCA projection of chunk vectors from Postgres, color-coded by document
-- **Per-question retrieval** — hybrid → filter → rerank funnel with dense/lexical/fused/rerank scores
+After a run, open **RAG explorer** on the results screen. Tabs include pipeline flow, score waterfall, embedding PCA map, similarity heatmap, and per-question retrieval diagnostics.
 
-API: `GET /api/history/{submissionId}/rag-observability`
+API: `GET /api/history/{submissionId}/rag-observability?serialNo=1`

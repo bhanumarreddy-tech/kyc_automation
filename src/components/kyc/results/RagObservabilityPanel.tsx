@@ -52,6 +52,14 @@ import type {
   RagQuestionTrace,
   RagRetrievalPass,
 } from "@/types/ragObservability";
+import {
+  FilterDiagnostics,
+  LearningIdeasCard,
+  PipelineFlowCard,
+  ScoreWaterfallChart,
+  SimilarityHeatmap,
+  TechniquesGuide,
+} from "./RagExplorerAdvanced";
 
 interface RagObservabilityPanelProps {
   submissionId: string | null | undefined;
@@ -206,7 +214,11 @@ function RetrievalPassView({ pass, label }: { pass: RagRetrievalPass; label: str
         />
       </div>
       <ScoreTable rows={pass.hybridCandidates} title="Hybrid pool (dense + lexical + RRF)" />
-      <ScoreTable rows={pass.hits} title="Selected evidence chunks" />
+      {pass.preMmrCandidates && pass.preMmrCandidates.length > pass.hits.length ? (
+        <ScoreTable rows={pass.preMmrCandidates} title="After rerank (before MMR)" />
+      ) : null}
+      <ScoreTable rows={pass.hits} title="Final evidence chunks" />
+      <FilterDiagnostics pass={pass} />
     </Card>
   );
 }
@@ -523,6 +535,31 @@ export function RagObservabilityPanel({
     };
   }, [open, submissionId]);
 
+  useEffect(() => {
+    if (!open || !submissionId || !selectedSerial) return;
+    const serial = Number(selectedSerial);
+    if (!Number.isFinite(serial)) return;
+    let cancelled = false;
+    void fetchRagObservability(submissionId, { serialNo: serial })
+      .then((payload) => {
+        if (cancelled) return;
+        setData((prev) =>
+          prev
+            ? {
+                ...prev,
+                similarityMatrix: payload.similarityMatrix,
+              }
+            : payload,
+        );
+      })
+      .catch(() => {
+        /* optional enrichment */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, submissionId, selectedSerial]);
+
   const selectedQuestion = useMemo(() => {
     if (!data?.trace?.questions?.length || !selectedSerial) return null;
     return (
@@ -541,6 +578,11 @@ export function RagObservabilityPanel({
       for (const hit of pass.hits) ids.add(hit.chunkId);
     }
     return ids;
+  }, [selectedQuestion]);
+
+  const selectedPass = useMemo(() => {
+    if (!selectedQuestion) return null;
+    return selectedQuestion.primaryRetrieval ?? selectedQuestion.recallRetrieval;
   }, [selectedQuestion]);
 
   const disabled = !submissionId?.trim();
@@ -577,14 +619,22 @@ export function RagObservabilityPanel({
           </Alert>
         ) : data ? (
           <Tabs defaultValue="overview" className="mt-4">
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-5 h-auto">
               <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="embeddings">Embedding map</TabsTrigger>
-              <TabsTrigger value="retrieval">Per-question retrieval</TabsTrigger>
+              <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
+              <TabsTrigger value="embeddings">Embeddings</TabsTrigger>
+              <TabsTrigger value="retrieval">Retrieval</TabsTrigger>
+              <TabsTrigger value="learn">Learn</TabsTrigger>
             </TabsList>
 
             <TabsContent value="overview" className="mt-4">
               <OverviewTab data={data} />
+            </TabsContent>
+
+            <TabsContent value="pipeline" className="mt-4 space-y-4">
+              <PipelineFlowCard pass={selectedPass} />
+              <ScoreWaterfallChart pass={selectedPass} />
+              <SimilarityHeatmap matrix={data.similarityMatrix} />
             </TabsContent>
 
             <TabsContent value="embeddings" className="mt-4">
@@ -628,6 +678,11 @@ export function RagObservabilityPanel({
                   </AlertDescription>
                 </Alert>
               )}
+            </TabsContent>
+
+            <TabsContent value="learn" className="mt-4 space-y-4">
+              <TechniquesGuide techniques={data.activeTechniques ?? []} />
+              <LearningIdeasCard />
             </TabsContent>
           </Tabs>
         ) : null}

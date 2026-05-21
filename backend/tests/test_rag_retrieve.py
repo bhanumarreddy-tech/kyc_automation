@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.questions import KYCQuestion
 from app.services.answer_section import AnsweredQuestion
 from app.services.documents import ParsedDocument
+from app.services.rag.rerank import token_rerank
 from app.services.rag.retrieve import RetrievedChunk, retrieve_for_query, retrieve_for_question
 from app.services.validate_section import _prepare_documents_for_validation_rag
 
@@ -50,9 +51,17 @@ async def test_retrieve_for_query_returns_reranked_chunks(monkeypatch: pytest.Mo
             return_value=[0.1] * 768,
         ),
         patch(
-            "app.services.rag.retrieve._hybrid_retrieve",
+            "app.services.rag.retrieve._hybrid_retrieve_multi",
             new_callable=AsyncMock,
             return_value=([hit], [0.1] * 768),
+        ),
+        patch(
+            "app.services.rag.rerank.gemini_rerank",
+            new_callable=AsyncMock,
+            side_effect=lambda q, c, s, **kw: (
+                token_rerank(q, c)[: kw.get("top_k") or len(c)],
+                "token_overlap",
+            ),
         ),
     ):
         results = await retrieve_for_query(sid, "registration number CIK", get_settings())

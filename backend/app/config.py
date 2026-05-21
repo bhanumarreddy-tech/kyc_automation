@@ -74,8 +74,16 @@ RAG_RRF_K = 60
 RAG_CONTEXTUALIZE = True
 RAG_PER_QUESTION = True
 RAG_SMALL_DOC_FULL_TEXT_CHARS = 50_000
-RAG_MIN_RELEVANCE_SCORE = 0.15
-RAG_RECALL_MIN_RELEVANCE_SCORE = 0.08
+# Relevance gates: dense cosine (0–1), lexical ts_rank, or fused RRF floor.
+RAG_MIN_DENSE_SCORE = 0.42
+RAG_MIN_LEXICAL_SCORE = 0.02
+RAG_MIN_RELEVANCE_SCORE = 0.012
+RAG_RECALL_MIN_RELEVANCE_SCORE = 0.008
+RAG_MULTI_QUERY_ENABLED = True
+RAG_GEMINI_RERANK_ENABLED = True
+RAG_GEMINI_RERANK_CANDIDATES = 15
+RAG_MMR_ENABLED = True
+RAG_MMR_LAMBDA = 0.65
 
 ENABLE_PROMPT_CACHING = True
 
@@ -315,8 +323,15 @@ class Settings:
     rag_contextualize: bool = RAG_CONTEXTUALIZE
     rag_per_question: bool = RAG_PER_QUESTION
     rag_small_doc_full_text_chars: int = RAG_SMALL_DOC_FULL_TEXT_CHARS
+    rag_min_dense_score: float = RAG_MIN_DENSE_SCORE
+    rag_min_lexical_score: float = RAG_MIN_LEXICAL_SCORE
     rag_min_relevance_score: float = RAG_MIN_RELEVANCE_SCORE
     rag_recall_min_relevance_score: float = RAG_RECALL_MIN_RELEVANCE_SCORE
+    rag_multi_query_enabled: bool = RAG_MULTI_QUERY_ENABLED
+    rag_gemini_rerank_enabled: bool = RAG_GEMINI_RERANK_ENABLED
+    rag_gemini_rerank_candidates: int = RAG_GEMINI_RERANK_CANDIDATES
+    rag_mmr_enabled: bool = RAG_MMR_ENABLED
+    rag_mmr_lambda: float = RAG_MMR_LAMBDA
     enable_prompt_caching: bool = ENABLE_PROMPT_CACHING
     overload_extra_attempts: int = GEMINI_OVERLOAD_EXTRA_ATTEMPTS
     overload_base_delay_seconds: float = GEMINI_OVERLOAD_BASE_DELAY_SECONDS
@@ -464,6 +479,14 @@ def get_settings() -> Settings:
             lo=5000,
             hi=500_000,
         ),
+        rag_min_dense_score=float(
+            os.environ.get("RAG_MIN_DENSE_SCORE", str(RAG_MIN_DENSE_SCORE))
+            or RAG_MIN_DENSE_SCORE
+        ),
+        rag_min_lexical_score=float(
+            os.environ.get("RAG_MIN_LEXICAL_SCORE", str(RAG_MIN_LEXICAL_SCORE))
+            or RAG_MIN_LEXICAL_SCORE
+        ),
         rag_min_relevance_score=float(
             os.environ.get("RAG_MIN_RELEVANCE_SCORE", str(RAG_MIN_RELEVANCE_SCORE))
             or RAG_MIN_RELEVANCE_SCORE
@@ -474,6 +497,22 @@ def get_settings() -> Settings:
                 str(RAG_RECALL_MIN_RELEVANCE_SCORE),
             )
             or RAG_RECALL_MIN_RELEVANCE_SCORE
+        ),
+        rag_multi_query_enabled=_env_bool(
+            "RAG_MULTI_QUERY_ENABLED", RAG_MULTI_QUERY_ENABLED
+        ),
+        rag_gemini_rerank_enabled=_env_bool(
+            "RAG_GEMINI_RERANK_ENABLED", RAG_GEMINI_RERANK_ENABLED
+        ),
+        rag_gemini_rerank_candidates=_env_int_clamped(
+            "RAG_GEMINI_RERANK_CANDIDATES",
+            RAG_GEMINI_RERANK_CANDIDATES,
+            lo=3,
+            hi=30,
+        ),
+        rag_mmr_enabled=_env_bool("RAG_MMR_ENABLED", RAG_MMR_ENABLED),
+        rag_mmr_lambda=float(
+            os.environ.get("RAG_MMR_LAMBDA", str(RAG_MMR_LAMBDA)) or RAG_MMR_LAMBDA
         ),
         enable_prompt_caching=ENABLE_PROMPT_CACHING,
         overload_extra_attempts=GEMINI_OVERLOAD_EXTRA_ATTEMPTS,

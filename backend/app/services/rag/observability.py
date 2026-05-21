@@ -85,8 +85,15 @@ class RagTraceCollector:
             "validationChunksPerQuestion": s.validation_chunks_per_question,
             "hybridLexicalWeight": s.rag_hybrid_lexical_weight,
             "rrfK": s.rag_rrf_k,
-            "minRelevanceScore": s.rag_min_relevance_score,
-            "recallMinRelevanceScore": s.rag_recall_min_relevance_score,
+            "minDenseScore": s.rag_min_dense_score,
+            "minLexicalScore": s.rag_min_lexical_score,
+            "minFusedScore": s.rag_min_relevance_score,
+            "recallMinFusedScore": s.rag_recall_min_relevance_score,
+            "multiQueryEnabled": s.rag_multi_query_enabled,
+            "geminiRerankEnabled": s.rag_gemini_rerank_enabled,
+            "geminiRerankCandidates": s.rag_gemini_rerank_candidates,
+            "mmrEnabled": s.rag_mmr_enabled,
+            "mmrLambda": s.rag_mmr_lambda,
         }
 
     def record_indexing(
@@ -218,31 +225,63 @@ def build_retrieval_trace(
     hits: list[RetrievedChunk],
     recall: bool,
     query_embedding: list[float] | None = None,
+    min_dense: float | None = None,
+    min_lexical: float | None = None,
+    pre_mmr_candidates: list[RetrievedChunk] | None = None,
+    expanded_queries: list[str] | None = None,
+    techniques: list[str] | None = None,
+    rerank_method: str | None = None,
+    filter_rejected: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Serialize one retrieval pass for observability."""
     reranked_with_rank = [
         chunk_hit_to_dict(c, rank=i + 1) for i, c in enumerate(hits)
     ]
+    pre_mmr = pre_mmr_candidates or hits
+    pre_mmr_preview = [
+        chunk_hit_to_dict(c, rank=i + 1) for i, c in enumerate(pre_mmr[:retrieve_top_k])
+    ]
     fused_preview = [
         {
             **chunk_hit_to_dict(c),
             "filteredOut": c not in filtered_candidates,
+            "filterReason": (filter_rejected or {}).get(str(c.chunk_id)),
         }
         for c in hybrid_candidates[:retrieve_top_k]
     ]
+    top_hit = hits[0] if hits else None
+    score_waterfall = None
+    if top_hit is not None:
+        score_waterfall = {
+            "chunkId": str(top_hit.chunk_id),
+            "filename": top_hit.filename,
+            "denseScore": round(top_hit.dense_score, 4),
+            "lexicalScore": round(top_hit.lexical_score, 4),
+            "fusedScore": round(top_hit.fused_score, 4),
+            "rerankScore": round(top_hit.rerank_score, 4),
+        }
     return {
         "recall": recall,
         "query": _preview_text(query, 2000),
+        "expandedQueries": expanded_queries or [query],
+        "techniques": techniques or [],
+        "rerankMethod": rerank_method,
         "retrieveTopK": retrieve_top_k,
         "rerankTopK": rerank_top_k,
         "minRelevance": min_relevance,
+        "minDenseScore": min_dense,
+        "minLexicalScore": min_lexical,
         "hybridCandidateCount": len(hybrid_candidates),
         "afterFilterCount": len(filtered_candidates),
+        "afterRerankCount": len(pre_mmr),
+        "hitCount": len(hits),
         "queryEmbeddingPreview": _embedding_preview(query_embedding or []),
         "queryEmbeddingNorm": _embedding_norm(query_embedding or []),
         "queryEmbedding": (
             [round(float(v), 6) for v in query_embedding] if query_embedding else None
         ),
         "hybridCandidates": fused_preview,
+        "preMmrCandidates": pre_mmr_preview,
         "hits": reranked_with_rank,
+        "scoreWaterfall": score_waterfall,
     }

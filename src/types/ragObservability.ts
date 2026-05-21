@@ -12,20 +12,38 @@ export interface RagChunkHit {
   rerankScore: number;
   rank?: number;
   filteredOut?: boolean;
+  filterReason?: string | null;
+}
+
+export interface RagScoreWaterfall {
+  chunkId: string;
+  filename: string;
+  denseScore: number;
+  lexicalScore: number;
+  fusedScore: number;
+  rerankScore: number;
 }
 
 export interface RagRetrievalPass {
   recall: boolean;
   query: string;
+  expandedQueries?: string[];
+  techniques?: string[];
+  rerankMethod?: string | null;
   retrieveTopK: number;
   rerankTopK: number;
   minRelevance: number;
+  minDenseScore?: number | null;
+  minLexicalScore?: number | null;
   hybridCandidateCount: number;
   afterFilterCount: number;
+  afterRerankCount?: number;
   queryEmbeddingPreview?: number[];
   queryEmbeddingNorm?: number;
   hybridCandidates: RagChunkHit[];
+  preMmrCandidates?: RagChunkHit[];
   hits: RagChunkHit[];
+  scoreWaterfall?: RagScoreWaterfall | null;
 }
 
 export interface RagQuestionTrace {
@@ -52,7 +70,7 @@ export interface RagTracePayload {
     documents: Array<{ filename: string; documentId: string; kind?: string }>;
     durationMs: number;
     skipped?: boolean;
-    skipReason?: string;
+    skipReason?: string | null;
   } | null;
   questions: RagQuestionTrace[];
   pipelineTiming: {
@@ -80,6 +98,21 @@ export interface EmbeddingPoint {
   label?: string;
 }
 
+export interface RagTechnique {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+
+export interface SimilarityMatrix {
+  labels: string[];
+  queryRow: number[];
+  rows: number[][];
+  serialNo?: number;
+  recall?: boolean;
+}
+
 export interface RagObservabilityResponse {
   submissionId: string;
   companyName: string;
@@ -93,4 +126,6 @@ export interface RagObservabilityResponse {
     documents: Array<{ documentId: string; color: string; label: string }>;
     stats: { chunkCount: number; documentCount: number; queryCount: number };
   };
+  similarityMatrix?: SimilarityMatrix | null;
+  activeTechniques?: RagTechnique[];
 }

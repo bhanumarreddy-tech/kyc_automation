@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import uuid
 from typing import Any
 
@@ -171,4 +172,69 @@ async def build_embedding_visualization(
             "documentCount": len(documents),
             "queryCount": len(query_points),
         },
+    }
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(float(x) * float(y) for x, y in zip(a, b, strict=False))
+    na = math.sqrt(sum(float(x) * float(x) for x in a))
+    nb = math.sqrt(sum(float(y) * float(y) for y in b))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return round(dot / (na * nb), 4)
+
+
+async def build_similarity_matrix(
+    submission_id: uuid.UUID,
+    *,
+    chunk_ids: list[uuid.UUID],
+    query_embedding: list[float] | None,
+) -> dict[str, Any]:
+    """Cosine similarity matrix: query row + chunk rows for heatmap UI."""
+    if not chunk_ids or not query_embedding:
+        return {"labels": [], "rows": [], "queryRow": []}
+
+    maker = db_session_maker()
+    if maker is None:
+        return {"labels": [], "rows": [], "queryRow": []}
+
+    async with maker() as session:
+        result = await session.execute(
+            select(
+                KYCDocumentChunk.id,
+                KYCDocumentChunk.filename,
+                KYCDocumentChunk.chunk_index,
+                KYCDocumentChunk.embedding,
+            ).where(
+                KYCDocumentChunk.submission_id == submission_id,
+                KYCDocumentChunk.id.in_(chunk_ids),
+            )
+        )
+        rows = result.all()
+
+    by_id = {row[0]: row for row in rows}
+    labels: list[str] = []
+    chunk_vectors: list[list[float]] = []
+    for cid in chunk_ids:
+        row = by_id.get(cid)
+        if row is None:
+            continue
+        _id, filename, chunk_index, embedding = row
+        labels.append(f"{filename or 'doc'} #{chunk_index}")
+        chunk_vectors.append([float(v) for v in embedding])
+
+    if not chunk_vectors:
+        return {"labels": [], "rows": [], "queryRow": []}
+
+    query_row = [_cosine(query_embedding, vec) for vec in chunk_vectors]
+    matrix_rows = []
+    for i, vec_i in enumerate(chunk_vectors):
+        matrix_rows.append([_cosine(vec_i, vec_j) for vec_j in chunk_vectors])
+
+    return {
+        "labels": labels,
+        "queryRow": query_row,
+        "rows": matrix_rows,
     }

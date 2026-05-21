@@ -156,9 +156,79 @@ async def _hybrid_retrieve(
 def _filter_by_relevance(
     chunks: list[RetrievedChunk],
     *,
-    min_score: float,
-) -> list[RetrievedChunk]:
-    return [c for c in chunks if c.fused_score >= min_score or c.lexical_score > 0]
+    min_dense: float,
+    min_lexical: float,
+    min_fused: float,
+) -> tuple[list[RetrievedChunk], dict[str, str]]:
+    """Keep chunks passing dense, lexical, or fused RRF thresholds."""
+    kept: list[RetrievedChunk] = []
+    rejected: dict[str, str] = {}
+    for c in chunks:
+        if c.dense_score >= min_dense:
+            kept.append(c)
+        elif c.lexical_score >= min_lexical:
+            kept.append(c)
+        elif c.fused_score >= min_fused:
+            kept.append(c)
+        else:
+            rejected[str(c.chunk_id)] = (
+                f"dense {c.dense_score:.3f} < {min_dense}; "
+                f"lexical {c.lexical_score:.3f} < {min_lexical}"
+            )
+    return kept, rejected
+
+
+async def _hybrid_retrieve_multi(
+    submission_id: uuid.UUID,
+    queries: list[str],
+    settings: Settings,
+    *,
+    top_k: int,
+) -> tuple[list[RetrievedChunk], list[float]]:
+    """Run hybrid search for each query variant and fuse with RRF across queries."""
+    if not queries:
+        return [], []
+
+    per_query: list[list[RetrievedChunk]] = []
+    query_vecs: list[list[float]] = []
+    for q in queries:
+        cands, qvec = await _hybrid_retrieve(submission_id, q, settings, top_k=top_k)
+        per_query.append(cands)
+        query_vecs.append(qvec)
+
+    if len(per_query) == 1:
+        return per_query[0], query_vecs[0] if query_vecs else []
+
+    k = settings.rag_rrf_k
+    fused_scores: dict[uuid.UUID, float] = {}
+    best_row: dict[uuid.UUID, RetrievedChunk] = {}
+    for cands in per_query:
+        for rank, c in enumerate(cands, start=1):
+            fused_scores[c.chunk_id] = fused_scores.get(c.chunk_id, 0.0) + _rrf(rank, k)
+            prev = best_row.get(c.chunk_id)
+            if prev is None or c.dense_score > prev.dense_score:
+                best_row[c.chunk_id] = c
+
+    merged: list[RetrievedChunk] = []
+    for cid, score in fused_scores.items():
+        base = best_row[cid]
+        merged.append(
+            RetrievedChunk(
+                chunk_id=base.chunk_id,
+                document_id=base.document_id,
+                chunk_index=base.chunk_index,
+                content=base.content,
+                page_start=base.page_start,
+                page_end=base.page_end,
+                filename=base.filename,
+                dense_score=base.dense_score,
+                lexical_score=base.lexical_score,
+                fused_score=score,
+                rerank_score=0.0,
+            )
+        )
+    merged.sort(key=lambda c: -c.fused_score)
+    return merged[:top_k], query_vecs[0] if query_vecs else []
 
 
 async def retrieve_for_query(
@@ -175,37 +245,75 @@ async def retrieve_for_query(
 ) -> list[RetrievedChunk]:
     top_k = retrieve_top_k or settings.rag_retrieve_top_k
     rerank_k = rerank_top_k or settings.rag_rerank_top_k
-    min_rel = (
+    min_fused = (
         min_relevance
         if min_relevance is not None
-        else settings.rag_min_relevance_score
-    )
-
-    hybrid_candidates, query_embedding = await _hybrid_retrieve(
-        submission_id, query, settings, top_k=top_k
-    )
-    filtered_candidates = _filter_by_relevance(hybrid_candidates, min_score=min_rel)
-
-    reranked: list[RetrievedChunk] = []
-    for c in filtered_candidates:
-        score = _rerank_score(query, c)
-        reranked.append(
-            RetrievedChunk(
-                chunk_id=c.chunk_id,
-                document_id=c.document_id,
-                chunk_index=c.chunk_index,
-                content=c.content,
-                page_start=c.page_start,
-                page_end=c.page_end,
-                filename=c.filename,
-                dense_score=c.dense_score,
-                lexical_score=c.lexical_score,
-                fused_score=c.fused_score,
-                rerank_score=score,
-            )
+        else (
+            settings.rag_recall_min_relevance_score
+            if recall
+            else settings.rag_min_relevance_score
         )
-    reranked.sort(key=lambda c: -c.rerank_score)
-    hits = reranked[:rerank_k]
+    )
+    min_dense = settings.rag_min_dense_score if not recall else max(
+        0.35, settings.rag_min_dense_score - 0.08
+    )
+    min_lexical = settings.rag_min_lexical_score
+
+    question_text = None
+    if question_ctx:
+        question_text = str(question_ctx.get("question") or "") or None
+
+    from app.services.rag.query_expansion import expand_retrieval_queries
+
+    expanded = expand_retrieval_queries(
+        query,
+        question_text=question_text,
+        enabled=settings.rag_multi_query_enabled,
+    )
+
+    hybrid_candidates, query_embedding = await _hybrid_retrieve_multi(
+        submission_id, expanded, settings, top_k=top_k
+    )
+    filtered_candidates, filter_rejected = _filter_by_relevance(
+        hybrid_candidates,
+        min_dense=min_dense,
+        min_lexical=min_lexical,
+        min_fused=min_fused,
+    )
+
+    from app.services.rag.rerank import gemini_rerank
+
+    reranked, rerank_method = await gemini_rerank(
+        query,
+        filtered_candidates,
+        settings,
+        top_k=min(len(filtered_candidates), settings.rag_gemini_rerank_candidates),
+    )
+
+    from app.services.rag.diversity import mmr_select
+
+    if settings.rag_mmr_enabled and len(reranked) > rerank_k:
+        hits = mmr_select(
+            reranked,
+            top_k=rerank_k,
+            lambda_mult=settings.rag_mmr_lambda,
+        )
+    else:
+        hits = reranked[:rerank_k]
+
+    techniques = [
+        "contextual_retrieval",
+        "hybrid_dense_lexical",
+        "rrf_fusion",
+    ]
+    if settings.rag_multi_query_enabled and len(expanded) > 1:
+        techniques.append("multi_query")
+    if rerank_method == "gemini_listwise":
+        techniques.append("gemini_rerank")
+    else:
+        techniques.append("token_rerank")
+    if settings.rag_mmr_enabled:
+        techniques.append("mmr_diversity")
 
     if question_ctx:
         from app.services.rag.observability import build_retrieval_trace
@@ -217,12 +325,19 @@ async def retrieve_for_query(
                 query=query,
                 retrieve_top_k=top_k,
                 rerank_top_k=rerank_k,
-                min_relevance=min_rel,
+                min_relevance=min_fused,
+                min_dense=min_dense,
+                min_lexical=min_lexical,
                 hybrid_candidates=hybrid_candidates,
                 filtered_candidates=filtered_candidates,
+                pre_mmr_candidates=reranked,
                 hits=hits,
                 recall=recall,
                 query_embedding=query_embedding,
+                expanded_queries=expanded,
+                techniques=techniques,
+                rerank_method=rerank_method,
+                filter_rejected=filter_rejected,
             )
             collector.record_retrieval(
                 serial_no=int(question_ctx["serialNo"]),
