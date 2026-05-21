@@ -1,63 +1,35 @@
 # KYC Automation Backend
 
-FastAPI service that powers the Tiger Analytics KYC automation prototype. It accepts a company name and optional documents (PDF, DOCX, images) and returns a populated 64-question KYC questionnaire driven by per-section **Google Gemini** calls.
-
-For each of the 8 sections the backend makes two LLM calls:
-
-1. **Answer call** — Gemini with **Google Search** grounding answers the section's questions using public web information and returns the URLs it used.
-2. **Validation call** — Gemini receives the proposed answers plus the uploaded documents and returns, per question, whether the documents support the answer (`Yes`/`No`) and, when `Yes`, the document source (filename, page, excerpt).
-
-The 8 answer calls run concurrently via `asyncio.gather`, and the 8 validation calls run concurrently afterwards.
-
-## Prerequisites
-
-- Python 3.10+
-- A **Gemini API key** from [Google AI Studio](https://aistudio.google.com/) (set `GEMINI_API_KEY`, or `GOOGLE_API_KEY`)
+FastAPI service for the KYC automation stack. See the [root README](../README.md) for full-stack setup, deployment, and environment configuration.
 
 ## Quick start
 
 ```powershell
-# from the repo root
 cd backend
-
-# Create and activate a virtualenv
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Configure environment
-copy .env.example .env
-# then edit .env and set GEMINI_API_KEY
-
-# Run the API server
+copy .env.example .env   # set GEMINI_API_KEY
 uvicorn app.main:app --reload --port 8000
 ```
 
-The frontend (`npm run dev` at the repo root, default port 8080) proxies all `/api/*` requests to `http://localhost:8000` via the dev-server config in `vite.config.ts`.
+## Layout
 
-## Endpoints
+| Path | Purpose |
+|------|---------|
+| `app/main.py` | Application entry, middleware, router registration |
+| `app/routes/` | HTTP endpoints (`process`, `history`, `intake`, `narrative`) |
+| `app/services/` | Pipeline orchestration, Gemini calls, document handling |
+| `app/db/` | SQLAlchemy models and persistence helpers |
+| `app/config.py` | Environment resolution, model IDs, limits, CORS |
+| `config/kyc_playbook.yaml` | Analyst playbook rules evaluated at runtime |
+| `tests/` | Pytest suite |
 
-- `GET /api/health` — simple liveness probe.
-- `POST /api/process` — multipart/form-data request:
-  - `company_name`: string (required)
-  - `files`: zero or more uploaded documents (PDF, DOCX, PNG, JPG)
-  - Response: `{ "rows": KYCRow[] }` with exactly 64 entries, one per question, with `answer`, `sources`, `validation`, `validationSources`, and `analystComments` fields.
+## API
 
-## Configuration
+- `GET /api/health` — liveness probe (includes database status when configured)
+- `POST /api/process` — run the KYC pipeline for a company and optional documents
+- `GET /api/history` — list saved submissions (requires Postgres)
+- Additional routes for intake tokens, reruns, attachments, and compliance narrative
 
-Non-secret tuning (Gemini answer/validation model IDs, validation limits,
-concurrency, overload backoff, and similar) lives in the constants at the top
-of [`app/config.py`](app/config.py).
-
-CORS is resolved from **`APP_ENV`** (`staging` / `production`) or an optional
-**`CORS_ALLOWED_ORIGINS`** comma-separated override — see [.env.example](.env.example).
-
-Secrets in `.env` (see [.env.example](.env.example)):
-
-| Variable | Notes |
-|----------|-------|
-| `GEMINI_API_KEY` | _(required)_ Google AI Studio API key (`GOOGLE_API_KEY` alias) |
-| `DATABASE_PASSWORD` | Optional Postgres password for history |
-| `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Required when uploads use object storage |
+Configuration details: [`app/config.py`](app/config.py) and [`.env.example`](.env.example).

@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,11 +30,10 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { AttachmentNameLink } from "@/components/kyc/AttachmentNameLink";
+import { MetadataCollapsible } from "@/components/kyc/MetadataCollapsible";
+import ProcessingView from "@/components/kyc/ProcessingView";
+import { ResultsTable } from "@/components/kyc/ResultsTable";
 import {
   Upload,
   FileText,
@@ -52,14 +44,17 @@ import {
   Link2,
   RefreshCw,
   ListFilter,
-  ChevronDown,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import ProcessingView from "@/components/kyc/ProcessingView";
-import { ResultsTable } from "@/components/kyc/ResultsTable";
 import { kycQuestions, hydrateKycRows } from "@/data/kycQuestions";
 import type { KYCRow } from "@/data/kycQuestions";
 import { apiUrl } from "@/lib/api";
+import { formatDurationMs, parseReferenceUrlsFromText } from "@/lib/kycPageUtils";
+import type {
+  AttachedDocumentItem,
+  HistoryListItem,
+  RerunEditState,
+} from "@/types/kycHistory";
 import {
   cancelProcessJob,
   startProcessJob,
@@ -82,129 +77,6 @@ import {
 
 type WorkflowStep = "upload" | "processing" | "results";
 type MainTab = "run" | "history";
-
-interface AttachedDocumentItem {
-  filename: string;
-  sizeBytes?: number | null;
-  contentType?: string;
-  objectKey?: string | null;
-}
-
-function attachmentDownloadUrl(submissionId: string, objectKey: string): string {
-  const q = new URLSearchParams({ objectKey });
-  return apiUrl(`/api/history/${encodeURIComponent(submissionId)}/attachments/download?${q.toString()}`);
-}
-
-function AttachmentNameLink(props: {
-  submissionId: string;
-  doc: AttachedDocumentItem;
-  className?: string;
-}) {
-  const { submissionId, doc, className } = props;
-  if (!doc.objectKey) {
-    return <span className={className}>{doc.filename}</span>;
-  }
-  return (
-    <a
-      href={attachmentDownloadUrl(submissionId, doc.objectKey)}
-      className={`text-primary underline-offset-4 hover:underline font-medium ${className ?? ""}`}
-    >
-      {doc.filename}
-    </a>
-  );
-}
-
-interface HistoryListItem {
-  submissionId: string;
-  companyName: string;
-  createdAt: string;
-  documentCount: number;
-  attachedDocuments?: AttachedDocumentItem[];
-  durationMs?: number | null;
-  completionPercent?: number;
-  needsReviewCount?: number;
-  referenceUrlCount?: number;
-}
-
-function formatDurationMs(ms: number | null | undefined): string {
-  if (ms == null || Number.isNaN(ms) || ms < 0) {
-    return "—";
-  }
-  if (ms < 1000) {
-    return `${ms} ms`;
-  }
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes <= 0) {
-    return `${seconds}s`;
-  }
-  return `${minutes}m ${seconds}s`;
-}
-
-/** Compact disclosure control for long attachment / URL lists. */
-function MetadataCollapsible({
-  label,
-  count,
-  emptyHint,
-  children,
-}: {
-  label: string;
-  count: number;
-  emptyHint: string;
-  children: ReactNode;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger
-        type="button"
-        className="flex w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 text-left text-sm shadow-sm hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <span>
-          <span className="font-medium">{label}</span>{" "}
-          <span className="text-muted-foreground">
-            {count === 0
-              ? "· none"
-              : `· ${count} ${count === 1 ? "item" : "items"}`}
-          </span>
-        </span>
-        <ChevronDown
-          className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`}
-          aria-hidden
-        />
-      </CollapsibleTrigger>
-      <CollapsibleContent className="space-y-2 pt-2">
-        {count === 0 ? (
-          <p className="text-sm text-muted-foreground pl-0.5">{emptyHint}</p>
-        ) : (
-          children
-        )}
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
-/** One URL per line; trim, drop empties, preserve first-seen order (matches backend). */
-function parseReferenceUrlsFromText(raw: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const line of raw.split(/\r?\n/)) {
-    const u = line.trim();
-    if (!u || seen.has(u)) continue;
-    seen.add(u);
-    out.push(u);
-  }
-  return out;
-}
-
-interface RerunEditState {
-  submissionId: string;
-  companyLabel: string;
-  retainedObjectKeys: string[];
-  referenceUrlsText: string;
-  newFiles: File[];
-}
 
 const HISTORY_LIST_ENDPOINT = apiUrl("/api/history");
 

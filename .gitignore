@@ -29,12 +29,16 @@ backend/__pycache__/
 backend/**/__pycache__/
 backend/.env
 
-# Local env files (frontend doesn't use one, but keep it out of git just in case)
+# Environment files (use .env.example templates)
 .env
 .env.local
+.env.development
+.env.staging
+.env.production
+
+# Cloudflare Wrangler build artifacts
+.wrangler/
 
 # Bun lockfile — repo uses npm (package-lock.json) for Cloudflare builds.
-# Ignore any local bun.lockb / bun.lock so accidentally running `bun
-# install` doesn't re-commit a competing lockfile.
 bun.lockb
 bun.lock
