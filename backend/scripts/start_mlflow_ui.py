@@ -153,7 +153,17 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    # MLflow 2.22 uses Flask + gunicorn (not uvicorn). Keep flags compatible with 2.x.
+    # Build the mlflow ui command.  --gunicorn-opts was removed in MLflow 3.x,
+    # so only include it when running on a 2.x release.
+    import importlib.metadata
+
+    try:
+        _mlflow_version = tuple(
+            int(x) for x in importlib.metadata.version("mlflow").split(".")[:2]
+        )
+    except Exception:
+        _mlflow_version = (2, 0)
+
     cmd = [
         "mlflow",
         "ui",
@@ -169,9 +179,12 @@ def main() -> None:
         uri,
         "--default-artifact-root",
         artifact_root,
-        "--gunicorn-opts",
-        "--timeout 120 --graceful-timeout 30 --log-level info",
     ]
+    if _mlflow_version < (3, 0):
+        cmd += [
+            "--gunicorn-opts",
+            "--timeout 120 --graceful-timeout 30 --log-level info",
+        ]
     if not serve_artifacts:
         cmd.append("--no-serve-artifacts")
 
