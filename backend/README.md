@@ -74,13 +74,14 @@ Deploy a **second Railway service** that only serves the MLflow UI, using the sa
    - **Link Postgres** — the UI prefers `DATABASE_URL` / `DATABASE_PUBLIC_URL` over `MLFLOW_TRACKING_URI`, so a shared `MLFLOW_TRACKING_URI=file:./mlruns` from the API will not break the UI service.
    - Optional override: `MLFLOW_TRACKING_URI=postgresql://…` (explicit Postgres URL)
    - Optional: `MLFLOW_ALLOWED_HOSTS=your-domain.up.railway.app` if the default `RAILWAY_PUBLIC_DOMAIN` is insufficient
-   - Optional: `MLFLOW_UI_WORKERS=1` (default) — raise only if the service has ≥1 GB RAM
    - Optional: `MLFLOW_SERVE_ARTIFACTS=true` to proxy artifact downloads (off by default to save memory)
    - Optional: `GIT_PYTHON_REFRESH=quiet` (silences Git warnings in the container)
-4. **Resources:** allocate at least **512 MB RAM** (1 GB recommended). The default single-worker config is tuned for small Railway plans.
-5. **Health check** (Settings → Deploy → Health Check Path): set **`/health`**. Railway sends `Host: healthcheck.railway.app`; the startup script adds that host automatically on Railway.
+4. **Resources:** allocate at least **1 GB RAM** for the MLflow UI service (512 MB often OOM-restarts on Railway).
+5. **Health check** (Settings → Deploy → Health Check Path): set **`/health`**. The startup script allows all hosts (`*`) on Railway so deploy probes succeed even when the Host header includes a port.
 6. **Networking → Generate domain** (e.g. `https://kyc-mlflow.up.railway.app`).
 7. Open the domain in a browser → **Experiments → kyc-rag-validation**.
+
+To lock down hosts in production, set `MLFLOW_ALLOWED_HOSTS=your-domain.up.railway.app,healthcheck.railway.app,healthcheck.railway.app:*`.
 
 Local Docker equivalent:
 

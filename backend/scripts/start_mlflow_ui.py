@@ -8,6 +8,11 @@ import re
 import sys
 from urllib.parse import quote_plus
 
+# mlflow.server.constants — internal vars the tracking server reads in workers
+_BACKEND_STORE_ENV = "_MLFLOW_SERVER_FILE_STORE"
+_REGISTRY_STORE_ENV = "_MLFLOW_SERVER_REGISTRY_STORE"
+_SERVE_ARTIFACTS_ENV = "_MLFLOW_SERVER_SERVE_ARTIFACTS"
+
 
 def _env_first(*names: str) -> str:
     for name in names:
@@ -109,27 +114,30 @@ def _redact_url(url: str) -> str:
     return re.sub(r"(://[^:/@]+:)[^@]+(@)", r"\1***\2", url, count=1)
 
 
+def _host_pattern(hostname: str) -> str:
+    """Allow Host headers with or without a port (Railway sends ``host:8080``)."""
+    hostname = hostname.strip()
+    if not hostname or hostname == "*":
+        return hostname
+    if ":*" in hostname or hostname.startswith("*"):
+        return hostname
+    return f"{hostname}, {hostname}:*"
+
+
 def _allowed_hosts() -> str:
     explicit = os.environ.get("MLFLOW_ALLOWED_HOSTS", "").strip()
     if explicit:
         return explicit
 
-    hosts = ["localhost", "127.0.0.1"]
     if _running_on_railway():
-        # Railway probes with Host: healthcheck.railway.app — without this the
-        # deploy health check fails and the container restarts in a loop.
-        hosts.append("healthcheck.railway.app")
+        # Behind Railway's reverse proxy; avoids deploy health-check 403 loops when
+        # Host is healthcheck.railway.app:PORT or other variants.
+        return "*"
 
-    for env_name in ("RAILWAY_PUBLIC_DOMAIN", "RAILWAY_PRIVATE_DOMAIN"):
-        domain = os.environ.get(env_name, "").strip()
-        if domain and domain not in hosts:
-            hosts.append(domain)
-
+    hosts: list[str] = []
+    for base in ("localhost", "127.0.0.1"):
+        hosts.append(_host_pattern(base))
     return ",".join(hosts)
-
-
-def _workers() -> str:
-    return os.environ.get("MLFLOW_UI_WORKERS", "1").strip() or "1"
 
 
 def _serve_artifacts() -> bool:
@@ -141,16 +149,28 @@ def _serve_artifacts() -> bool:
     return False
 
 
+def _configure_server_env(*, uri: str, allowed_hosts: str, serve_artifacts: bool) -> None:
+    os.environ[_BACKEND_STORE_ENV] = uri
+    os.environ[_REGISTRY_STORE_ENV] = uri
+    os.environ[_SERVE_ARTIFACTS_ENV] = "true" if serve_artifacts else "false"
+    os.environ["MLFLOW_ENABLE_WORKSPACES"] = "false"
+    if allowed_hosts == "*":
+        os.environ["MLFLOW_SERVER_ALLOWED_HOSTS"] = "*"
+    else:
+        os.environ["MLFLOW_SERVER_ALLOWED_HOSTS"] = allowed_hosts
+
+
 def main() -> None:
     uri = resolve_tracking_uri()
     port = os.environ.get("PORT", "5000").strip() or "5000"
     allowed_hosts = _allowed_hosts()
-    workers = _workers()
+    serve_artifacts = _serve_artifacts()
 
     print(
         f"Starting MLflow UI on 0.0.0.0:{port} "
-        f"backend={_redact_url(uri)} workers={workers} "
-        f"allowed_hosts={allowed_hosts}"
+        f"backend={_redact_url(uri)} "
+        f"allowed_hosts={allowed_hosts} "
+        f"serve_artifacts={serve_artifacts}"
     )
     if _is_file_tracking_uri(uri):
         print(
@@ -158,25 +178,24 @@ def main() -> None:
             file=sys.stderr,
         )
 
+    _configure_server_env(uri=uri, allowed_hosts=allowed_hosts, serve_artifacts=serve_artifacts)
+
+    # Single-process uvicorn (no ``--workers``) uses less RAM than ``mlflow ui`` on
+    # small Railway containers and avoids supervisor/worker restart churn.
     cmd = [
-        "mlflow",
-        "ui",
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "mlflow.server.fastapi_app:app",
         "--host",
         "0.0.0.0",
         "--port",
         port,
-        "--workers",
-        workers,
-        "--backend-store-uri",
-        uri,
-        "--registry-store-uri",
-        uri,
-        "--allowed-hosts",
-        allowed_hosts,
+        "--log-level",
+        "warning",
+        "--timeout-keep-alive",
+        "30",
     ]
-    if not _serve_artifacts():
-        cmd.append("--no-serve-artifacts")
-
     os.execvp(cmd[0], cmd)
 
 
