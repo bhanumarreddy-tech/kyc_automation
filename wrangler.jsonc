@@ -8,7 +8,7 @@
   //   npm run deploy:production  → https://kycautomation.bhanu-marreddy.workers.dev
   //   npm run deploy:staging     → https://kyc-automation-staging.bhanu-marreddy.workers.dev
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "kyc-automation",
+  "name": "kycautomation",
   "compatibility_date": "2026-05-01",
   "assets": {
     // SPA fallback so deep links like /kyc-automation route through React
