@@ -13,6 +13,31 @@ from app.db.models import KYCIntakeToken, KYCSubmission, KYCSubmissionMetadata
 from app.schemas import AttachedDocument, KYCRow
 
 
+async def ensure_submission_stub(
+    session: AsyncSession,
+    *,
+    submission_id: UUID,
+    company_name: str,
+) -> KYCSubmission:
+    """Insert a placeholder row so RAG chunks can reference ``submission_id`` before the pipeline finishes."""
+    existing = await get_kyc_submission(session, submission_id)
+    if existing is not None:
+        return existing
+    record = KYCSubmission(
+        id=submission_id,
+        company_name=company_name,
+        rows=[],
+        document_filenames=None,
+        reference_urls=None,
+        duration_ms=None,
+        pipeline_intelligence=None,
+    )
+    session.add(record)
+    await session.flush()
+    await session.refresh(record)
+    return record
+
+
 async def create_kyc_submission(
     session: AsyncSession,
     *,
@@ -31,6 +56,17 @@ async def create_kyc_submission(
         else None
     )
     ref_meta = reference_urls if reference_urls else None
+    existing = await get_kyc_submission(session, submission_id)
+    if existing is not None:
+        existing.company_name = company_name
+        existing.rows = payload
+        existing.document_filenames = doc_meta
+        existing.reference_urls = ref_meta
+        existing.duration_ms = duration_ms
+        existing.pipeline_intelligence = pipeline_intelligence
+        await session.flush()
+        await session.refresh(existing)
+        return existing
     record = KYCSubmission(
         id=submission_id,
         company_name=company_name,

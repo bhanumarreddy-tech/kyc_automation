@@ -19,6 +19,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import UUID
 
 from app.config import get_settings
 from app.questions import KYC_QUESTIONS, KYCQuestion, group_by_section
@@ -33,6 +34,7 @@ from app.services.source_urls import (
     prioritize_and_cap_answer_sources,
     sanitize_answer_sources_urls,
 )
+from app.services.rag.index import index_submission_documents, rag_indexing_available
 from app.services.validate_section import ValidationResult, validate_section
 
 logger = logging.getLogger(__name__)
@@ -82,6 +84,7 @@ async def run_pipeline(
     uploads: list[tuple[str, bytes, str]],
     reference_urls: list[str] | None = None,
     *,
+    submission_id: UUID | None = None,
     on_progress: Callable[[ProgressPayload], Awaitable[None] | None] | None = None,
     cancel_event: asyncio.Event | None = None,
 ) -> RunPipelineOutcome:
@@ -110,12 +113,47 @@ async def run_pipeline(
         len(url_docs),
     )
 
+    rag_chunk_count = 0
+    if submission_id is not None and rag_indexing_available(settings):
+        await _emit(
+            on_progress,
+            {
+                "phase": "prep",
+                "status": "indexing",
+                "detail": "Indexing documents for validation retrieval",
+            },
+        )
+        try:
+            rag_chunk_count = await index_submission_documents(
+                submission_id,
+                company,
+                parsed_docs,
+                settings=settings,
+            )
+        except Exception:
+            logger.exception(
+                "RAG indexing failed for submission=%s; validation will fall back",
+                submission_id,
+            )
+        logger.info(
+            "RAG index submission=%s chunks=%d",
+            submission_id,
+            rag_chunk_count,
+        )
+
     await _emit(
         on_progress,
         {
             "phase": "prep",
             "status": "complete",
-            "detail": f"Loaded {len(upload_docs)} file(s), {len(url_docs)} URL doc(s)",
+            "detail": (
+                f"Loaded {len(upload_docs)} file(s), {len(url_docs)} URL doc(s)"
+                + (
+                    f"; indexed {rag_chunk_count} chunk(s) for retrieval"
+                    if rag_chunk_count
+                    else ""
+                )
+            ),
         },
     )
 
@@ -154,7 +192,13 @@ async def run_pipeline(
     ) -> list[ValidationResult]:
         async with validation_sem:
             return await validate_section(
-                company, section_no, section_name, questions, answers, parsed_docs
+                company,
+                section_no,
+                section_name,
+                questions,
+                answers,
+                parsed_docs,
+                submission_id=submission_id,
             )
 
     n_sec = len(sections)

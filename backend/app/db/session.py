@@ -107,6 +107,48 @@ async def _ensure_postgres_addon_columns(conn) -> None:
         )
     )
 
+    await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    await conn.execute(
+        text(
+            f"""
+            CREATE TABLE IF NOT EXISTS kyc_document_chunks (
+                id UUID PRIMARY KEY,
+                submission_id UUID NOT NULL REFERENCES kyc_submissions(id) ON DELETE CASCADE,
+                document_id VARCHAR(2048) NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                page_start INTEGER,
+                page_end INTEGER,
+                content TEXT NOT NULL,
+                contextualized_content TEXT NOT NULL,
+                content_tsv TSVECTOR,
+                embedding vector({get_settings().rag_embedding_dimensions}) NOT NULL,
+                metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb
+            )
+            """
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_kyc_document_chunks_submission_id "
+            "ON kyc_document_chunks (submission_id)"
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_kyc_document_chunks_content_tsv "
+            "ON kyc_document_chunks USING GIN (content_tsv)"
+        )
+    )
+    await conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_kyc_document_chunks_embedding_hnsw
+            ON kyc_document_chunks
+            USING hnsw (embedding vector_cosine_ops)
+            """
+        )
+    )
+
 
 async def init_database() -> None:
     """Create engine, session factory, and tables when ``DATABASE_URL`` is set."""
@@ -130,6 +172,8 @@ async def init_database() -> None:
         expire_on_commit=False,
     )
     async with _engine.begin() as conn:
+        if conn.engine.dialect.name == "postgresql":
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
         await _ensure_postgres_addon_columns(conn)
 

@@ -15,6 +15,7 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 from google.genai import types
 
@@ -37,6 +38,12 @@ from app.services.gemini_client import (
     user_content_blocks_to_gemini_parts,
 )
 from app.services.gemini_schemas import KYC_VALIDATION_RESPONSE_JSON_SCHEMA
+from app.services.rag.index import count_submission_chunks, rag_indexing_available
+from app.services.rag.pack import (
+    chunks_to_parsed_documents,
+    should_use_full_corpus_fallback,
+)
+from app.services.rag.retrieve import retrieve_for_section
 
 logger = logging.getLogger(__name__)
 
@@ -602,6 +609,68 @@ def _prepare_documents_for_validation(
     return chunked, False, fallback_corpus
 
 
+async def _prepare_documents_for_validation_rag(
+    documents: list[ParsedDocument],
+    settings: Settings,
+    *,
+    submission_id: UUID,
+    questions: list[KYCQuestion],
+    answers: list[AnsweredQuestion],
+    recall: bool = False,
+) -> tuple[list[ParsedDocument], bool, list[ParsedDocument]] | None:
+    """Semantic RAG path. Returns ``None`` when indexing/retrieval is unavailable."""
+    if not rag_indexing_available(settings):
+        return None
+
+    indexed = await count_submission_chunks(submission_id)
+    if indexed <= 0:
+        return None
+
+    attach = settings.validation_attach_documents
+    pdf_expanded = expand_all_documents(documents, settings)
+    chunked = expand_large_text_documents(
+        pdf_expanded, settings, attach_natively=attach
+    )
+    textual_pool_pre = [
+        d
+        for d in chunked
+        if (
+            not is_native_validation_part(d, settings, attach_natively=attach)
+            and bool(d.text and d.text.strip())
+        )
+    ]
+    corpus_chars = (
+        estimated_text_budget(chunked, settings, attach_natively=attach)
+        if textual_pool_pre
+        else 0
+    )
+    fallback_corpus = list(textual_pool_pre)
+
+    if should_use_full_corpus_fallback(indexed, corpus_chars, settings):
+        return None
+
+    hits = await retrieve_for_section(
+        submission_id,
+        questions,
+        answers,
+        settings,
+        recall=recall,
+    )
+    if not hits:
+        return None
+
+    retrieved_docs = chunks_to_parsed_documents(
+        hits,
+        max_total_chars=settings.validation_max_total_text_chars,
+    )
+    natives = [
+        d
+        for d in chunked
+        if is_native_validation_part(d, settings, attach_natively=attach)
+    ]
+    return natives + retrieved_docs, True, fallback_corpus
+
+
 async def validate_section(
     company: str,
     section_no: int,
@@ -609,6 +678,8 @@ async def validate_section(
     questions: list[KYCQuestion],
     answers: list[AnsweredQuestion],
     documents: list[ParsedDocument],
+    *,
+    submission_id: UUID | None = None,
 ) -> list[ValidationResult]:
     """Run the validation Gemini calls for one section (possibly sharded)."""
 
@@ -619,18 +690,31 @@ async def validate_section(
     client = get_client()
     attach = settings.validation_attach_documents
 
-    retrieval_query = (
-        build_section_query_fragment(questions, answers)
-        if settings.validation_use_chunk_retrieval
-        else None
-    )
-    prepared, retrieval_used_flag, textual_fallback_pool = (
-        _prepare_documents_for_validation(
+    retrieval_query = build_section_query_fragment(questions, answers)
+    rag_prepared: tuple[list[ParsedDocument], bool, list[ParsedDocument]] | None = None
+    if submission_id is not None:
+        rag_prepared = await _prepare_documents_for_validation_rag(
             documents,
             settings,
-            section_query=retrieval_query,
+            submission_id=submission_id,
+            questions=questions,
+            answers=answers,
+            recall=False,
         )
-    )
+
+    if rag_prepared is not None:
+        prepared, retrieval_used_flag, textual_fallback_pool = rag_prepared
+    else:
+        keyword_query = (
+            retrieval_query if settings.validation_use_chunk_retrieval else None
+        )
+        prepared, retrieval_used_flag, textual_fallback_pool = (
+            _prepare_documents_for_validation(
+                documents,
+                settings,
+                section_query=keyword_query,
+            )
+        )
 
     shards = pack_validation_shards(
         prepared,
@@ -664,12 +748,34 @@ async def validate_section(
     recall_docs_for_url_index: list[ParsedDocument] = []
 
     if retrieval_used_flag and not _globally_has_yes(merged):
-        wider = retrieval_selected_documents(
-            textual_fallback_pool,
-            retrieval_query or build_section_query_fragment(questions, answers),
-            settings,
-            top_k=settings.validation_retrieval_recall_chunks,
-        )
+        recall_prepared: list[ParsedDocument] | None = None
+        if submission_id is not None:
+            rag_recall = await _prepare_documents_for_validation_rag(
+                documents,
+                settings,
+                submission_id=submission_id,
+                questions=questions,
+                answers=answers,
+                recall=True,
+            )
+            if rag_recall is not None:
+                recall_prepared, _, _ = rag_recall
+
+        if recall_prepared is not None:
+            wider = [
+                d
+                for d in recall_prepared
+                if not is_native_validation_part(
+                    d, settings, attach_natively=attach
+                )
+            ]
+        else:
+            wider = retrieval_selected_documents(
+                textual_fallback_pool,
+                retrieval_query,
+                settings,
+                top_k=settings.validation_retrieval_recall_chunks,
+            )
 
         natives_recall = [
             d

@@ -290,6 +290,7 @@ async def test_pipeline_merges_upload_and_url_docs(monkeypatch: pytest.MonkeyPat
         questions,
         _answers,
         parsed_docs,
+        **_kwargs,
     ):
         captured.setdefault("docs", []).append(parsed_docs)
         return [

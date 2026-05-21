@@ -58,6 +58,24 @@ VALIDATION_RETRIEVAL_CHUNK_TARGET_CHARS = 2250
 VALIDATION_RETRIEVAL_TOP_CHUNKS = 36
 VALIDATION_RETRIEVAL_RECALL_CHUNKS = 72
 
+# Semantic RAG for validation (pgvector + hybrid retrieval). Requires Postgres.
+RAG_ENABLED = True
+RAG_EMBEDDING_MODEL = "gemini-embedding-001"
+RAG_EMBEDDING_DIMENSIONS = 768
+RAG_CHUNK_TARGET_CHARS = 2000
+RAG_CHUNK_OVERLAP_CHARS = 256
+RAG_RETRIEVE_TOP_K = 20
+RAG_RERANK_TOP_K = 6
+RAG_RECALL_RETRIEVE_TOP_K = 40
+RAG_RECALL_RERANK_TOP_K = 12
+RAG_HYBRID_LEXICAL_WEIGHT = 0.3
+RAG_RRF_K = 60
+RAG_CONTEXTUALIZE = True
+RAG_PER_QUESTION = True
+RAG_SMALL_DOC_FULL_TEXT_CHARS = 50_000
+RAG_MIN_RELEVANCE_SCORE = 0.15
+RAG_RECALL_MIN_RELEVANCE_SCORE = 0.08
+
 ENABLE_PROMPT_CACHING = True
 
 GEMINI_OVERLOAD_EXTRA_ATTEMPTS = 3
@@ -281,6 +299,22 @@ class Settings:
     validation_retrieval_chunk_target_chars: int = VALIDATION_RETRIEVAL_CHUNK_TARGET_CHARS
     validation_retrieval_top_chunks: int = VALIDATION_RETRIEVAL_TOP_CHUNKS
     validation_retrieval_recall_chunks: int = VALIDATION_RETRIEVAL_RECALL_CHUNKS
+    rag_enabled: bool = RAG_ENABLED
+    rag_embedding_model: str = RAG_EMBEDDING_MODEL
+    rag_embedding_dimensions: int = RAG_EMBEDDING_DIMENSIONS
+    rag_chunk_target_chars: int = RAG_CHUNK_TARGET_CHARS
+    rag_chunk_overlap_chars: int = RAG_CHUNK_OVERLAP_CHARS
+    rag_retrieve_top_k: int = RAG_RETRIEVE_TOP_K
+    rag_rerank_top_k: int = RAG_RERANK_TOP_K
+    rag_recall_retrieve_top_k: int = RAG_RECALL_RETRIEVE_TOP_K
+    rag_recall_rerank_top_k: int = RAG_RECALL_RERANK_TOP_K
+    rag_hybrid_lexical_weight: float = RAG_HYBRID_LEXICAL_WEIGHT
+    rag_rrf_k: int = RAG_RRF_K
+    rag_contextualize: bool = RAG_CONTEXTUALIZE
+    rag_per_question: bool = RAG_PER_QUESTION
+    rag_small_doc_full_text_chars: int = RAG_SMALL_DOC_FULL_TEXT_CHARS
+    rag_min_relevance_score: float = RAG_MIN_RELEVANCE_SCORE
+    rag_recall_min_relevance_score: float = RAG_RECALL_MIN_RELEVANCE_SCORE
     enable_prompt_caching: bool = ENABLE_PROMPT_CACHING
     overload_extra_attempts: int = GEMINI_OVERLOAD_EXTRA_ATTEMPTS
     overload_base_delay_seconds: float = GEMINI_OVERLOAD_BASE_DELAY_SECONDS
@@ -368,6 +402,69 @@ def get_settings() -> Settings:
         validation_retrieval_chunk_target_chars=VALIDATION_RETRIEVAL_CHUNK_TARGET_CHARS,
         validation_retrieval_top_chunks=VALIDATION_RETRIEVAL_TOP_CHUNKS,
         validation_retrieval_recall_chunks=VALIDATION_RETRIEVAL_RECALL_CHUNKS,
+        rag_enabled=_env_bool("RAG_ENABLED", RAG_ENABLED),
+        rag_embedding_model=os.environ.get("RAG_EMBEDDING_MODEL", RAG_EMBEDDING_MODEL).strip()
+        or RAG_EMBEDDING_MODEL,
+        rag_embedding_dimensions=_env_int_clamped(
+            "RAG_EMBEDDING_DIMENSIONS",
+            RAG_EMBEDDING_DIMENSIONS,
+            lo=128,
+            hi=3072,
+        ),
+        rag_chunk_target_chars=_env_int_clamped(
+            "RAG_CHUNK_TARGET_CHARS",
+            RAG_CHUNK_TARGET_CHARS,
+            lo=400,
+            hi=8000,
+        ),
+        rag_chunk_overlap_chars=_env_int_clamped(
+            "RAG_CHUNK_OVERLAP_CHARS",
+            RAG_CHUNK_OVERLAP_CHARS,
+            lo=0,
+            hi=2000,
+        ),
+        rag_retrieve_top_k=_env_int_clamped(
+            "RAG_RETRIEVE_TOP_K", RAG_RETRIEVE_TOP_K, lo=5, hi=100
+        ),
+        rag_rerank_top_k=_env_int_clamped(
+            "RAG_RERANK_TOP_K", RAG_RERANK_TOP_K, lo=1, hi=50
+        ),
+        rag_recall_retrieve_top_k=_env_int_clamped(
+            "RAG_RECALL_RETRIEVE_TOP_K",
+            RAG_RECALL_RETRIEVE_TOP_K,
+            lo=10,
+            hi=150,
+        ),
+        rag_recall_rerank_top_k=_env_int_clamped(
+            "RAG_RECALL_RERANK_TOP_K",
+            RAG_RECALL_RERANK_TOP_K,
+            lo=1,
+            hi=80,
+        ),
+        rag_hybrid_lexical_weight=float(
+            os.environ.get("RAG_HYBRID_LEXICAL_WEIGHT", str(RAG_HYBRID_LEXICAL_WEIGHT))
+            or RAG_HYBRID_LEXICAL_WEIGHT
+        ),
+        rag_rrf_k=_env_int_clamped("RAG_RRF_K", RAG_RRF_K, lo=1, hi=200),
+        rag_contextualize=_env_bool("RAG_CONTEXTUALIZE", RAG_CONTEXTUALIZE),
+        rag_per_question=_env_bool("RAG_PER_QUESTION", RAG_PER_QUESTION),
+        rag_small_doc_full_text_chars=_env_int_clamped(
+            "RAG_SMALL_DOC_FULL_TEXT_CHARS",
+            RAG_SMALL_DOC_FULL_TEXT_CHARS,
+            lo=5000,
+            hi=500_000,
+        ),
+        rag_min_relevance_score=float(
+            os.environ.get("RAG_MIN_RELEVANCE_SCORE", str(RAG_MIN_RELEVANCE_SCORE))
+            or RAG_MIN_RELEVANCE_SCORE
+        ),
+        rag_recall_min_relevance_score=float(
+            os.environ.get(
+                "RAG_RECALL_MIN_RELEVANCE_SCORE",
+                str(RAG_RECALL_MIN_RELEVANCE_SCORE),
+            )
+            or RAG_RECALL_MIN_RELEVANCE_SCORE
+        ),
         enable_prompt_caching=ENABLE_PROMPT_CACHING,
         overload_extra_attempts=GEMINI_OVERLOAD_EXTRA_ATTEMPTS,
         overload_base_delay_seconds=GEMINI_OVERLOAD_BASE_DELAY_SECONDS,

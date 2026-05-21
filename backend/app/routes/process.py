@@ -193,7 +193,12 @@ async def process_kyc(
 
     logger.info("process_kyc: pipeline starting elapsed=%.3fs", _elapsed())
     pipeline_started = time.perf_counter()
-    outcome = await run_pipeline(company, uploads, reference_urls=ok_urls)
+    outcome = await run_pipeline(
+        company,
+        uploads,
+        reference_urls=ok_urls,
+        submission_id=submission_id_uuid if maker is not None else None,
+    )
     duration_ms = int((time.perf_counter() - pipeline_started) * 1000)
     rows = outcome.rows
     pipe_err = _errors_from_raw(outcome.section_errors)
@@ -373,7 +378,12 @@ async def rerun_process_kyc(
         )
 
     pipeline_started = time.perf_counter()
-    outcome = await run_pipeline(company, uploads, reference_urls=ok_urls)
+    outcome = await run_pipeline(
+        company,
+        uploads,
+        reference_urls=ok_urls,
+        submission_id=submission_id_uuid if maker is not None else None,
+    )
     duration_ms = int((time.perf_counter() - pipeline_started) * 1000)
     rows = outcome.rows
     pipe_err = _errors_from_raw(outcome.section_errors)
@@ -490,6 +500,7 @@ async def process_kyc_async(
                 company,
                 uploads,
                 reference_urls=ok_urls,
+                submission_id=submission_id_uuid if maker is not None else None,
                 on_progress=on_progress,
                 cancel_event=st.cancel_event,
             )
@@ -661,6 +672,7 @@ async def rerun_process_kyc_async(
                 company,
                 uploads,
                 reference_urls=ok_urls,
+                submission_id=submission_id_uuid,
                 on_progress=on_progress,
                 cancel_event=st.cancel_event,
             )
