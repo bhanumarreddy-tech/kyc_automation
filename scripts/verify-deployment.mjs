@@ -1,23 +1,46 @@
 /**
  * Split-deploy smoke checks: Workers static SPA vs FastAPI backend.
  *
- * Workers (defaults to production Workers URL):
- *   - Confirms GET /api/health is NOT JSON (SPA trap).
- *   - Confirms bundled client posts to /api/process (relative) unless a full backend base appears in chunks.
+ * Profiles (recommended):
+ *   npm run smoke:staging
+ *   npm run smoke:production
  *
- * Backend (when KYC_BACKEND_BASE_URL is set, no trailing slash):
- *   GET {base}/api/health must return JSON {"status":"ok"}.
+ * Or pass a profile name:
+ *   node scripts/verify-deployment.mjs staging
  *
- * Usage:
- *   node scripts/verify-deployment.mjs
- *   cross-env KYC_BACKEND_BASE_URL=https://xxx.up.railway.app node scripts/verify-deployment.mjs
+ * Override individual targets:
+ *   KYC_WORKERS_ORIGIN=https://...
+ *   KYC_BACKEND_BASE_URL=https://xxx.up.railway.app
  */
 
-const WORKERS_ORIGIN =
-  process.env.KYC_WORKERS_ORIGIN?.replace(/\/$/, "") ||
-  "https://kycautomation.bhanu-marreddy.workers.dev";
+const PROFILES = {
+  production: {
+    workersOrigin: "https://kycautomation.bhanu-marreddy.workers.dev",
+    backendBase: "https://kycautomation-production.up.railway.app",
+  },
+  staging: {
+    workersOrigin: "https://kyc-automation-staging.bhanu-marreddy.workers.dev",
+    backendBase: "https://kycautomation-staging.up.railway.app",
+  },
+};
 
-const BACKEND_BASE = process.env.KYC_BACKEND_BASE_URL?.trim().replace(/\/$/, "") || "";
+const profileName = (
+  process.argv[2] ||
+  process.env.KYC_DEPLOY_ENV ||
+  "production"
+).trim().toLowerCase();
+
+const profile = PROFILES[profileName] || PROFILES.production;
+if (!PROFILES[profileName]) {
+  console.warn(`Unknown profile "${profileName}" — using production defaults.`);
+}
+
+const WORKERS_ORIGIN =
+  process.env.KYC_WORKERS_ORIGIN?.replace(/\/$/, "") || profile.workersOrigin;
+
+const BACKEND_BASE =
+  process.env.KYC_BACKEND_BASE_URL?.trim().replace(/\/$/, "") ||
+  profile.backendBase;
 
 const hardFailures = [];
 
@@ -90,21 +113,23 @@ async function verifyBundleUsesBackendBase(mainJsUrl) {
   if (!hasRelativeProcess && !looksLikeExternalApi)
     remind("Main bundle: could not infer /api/process path (minification changed literals?).");
 
-  if (looksLikeExternalApi)
-    note("Main bundle may reference absolute API host — confirm it matches Railway.");
-  else if (hasRelativeProcess)
-    note(
+  if (looksLikeExternalApi) {
+    const expectedHost = new URL(BACKEND_BASE).host;
+    if (text.includes(expectedHost)) {
+      note(`Main bundle references expected backend host (${expectedHost}).`);
+    } else {
+      warnHard(
+        `Main bundle references an external API host but not the expected ${expectedHost} — rebuild with the matching .env file.`
+      );
+    }
+  } else if (hasRelativeProcess) {
+    warnHard(
       "Main bundle uses relative /api/process → browser calls Workers origin unless Cloudflare proxies /api to Railway (this repo wrangler assets-only does not)."
     );
+  }
 }
 
 async function verifyBackendHealth() {
-  if (!BACKEND_BASE) {
-    note(
-      "KYC_BACKEND_BASE_URL not set — skipped backend GET /api/health. Set it to your Railway public HTTPS origin (no path, no trailing slash) and re-run."
-    );
-    return;
-  }
   const url = `${BACKEND_BASE}/api/health`;
   try {
     const { text, ct, res } = await fetchText(url);
@@ -137,8 +162,9 @@ async function verifyWorkersPostToApi() {
 }
 
 async function main() {
+  console.log(`Profile:        ${profileName}`);
   console.log(`Workers origin: ${WORKERS_ORIGIN}`);
-  if (BACKEND_BASE) console.log(`Backend base:   ${BACKEND_BASE}`);
+  console.log(`Backend base:   ${BACKEND_BASE}`);
   await verifyWorkersHealthTrap();
   const mainJsUrl = await getMainJsUrl();
   if (mainJsUrl) note(`Fetched bundle: ${mainJsUrl}`);
@@ -147,10 +173,10 @@ async function main() {
   await verifyBackendHealth();
 
   if (hardFailures.length) {
-    console.error(`\n${hardFailures.length} failure(s) — fix or set KYC_BACKEND_BASE_URL and retry.`);
+    console.error(`\n${hardFailures.length} failure(s) — fix deploy pairing and retry.`);
     process.exitCode = 1;
   } else {
-    console.log("\nSmoke checks finished (no hard failures). Optional: set KYC_BACKEND_BASE_URL to verify Railway health.");
+    console.log("\nSmoke checks finished (no hard failures).");
   }
 }
 

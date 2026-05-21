@@ -6,10 +6,16 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:staging": "vite build --mode staging",
+    "build:production": "vite build",
     "build:dev": "vite build --mode development",
+    "deploy:staging": "npm run build:staging && npx wrangler deploy --env staging",
+    "deploy:production": "npm run build:production && npx wrangler deploy",
     "lint": "eslint .",
     "preview": "vite preview",
-    "smoke:deployment": "node scripts/verify-deployment.mjs"
+    "smoke:deployment": "node scripts/verify-deployment.mjs",
+    "smoke:staging": "node scripts/verify-deployment.mjs staging",
+    "smoke:production": "node scripts/verify-deployment.mjs production"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

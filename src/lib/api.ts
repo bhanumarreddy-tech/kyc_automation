@@ -1,6 +1,6 @@
 /**
- * Optional: set in `.env.development` / `.env.production` when the API lives on
- * another origin. No trailing slash.
+ * Optional: set in `.env.development`, `.env.staging`, or `.env.production`
+ * when the API lives on another origin. No trailing slash.
  *
  * Examples:
  * - Same-origin (Docker Compose nginx proxy): leave unset → `/api/...`.

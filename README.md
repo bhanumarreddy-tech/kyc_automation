@@ -39,7 +39,7 @@ uvicorn app.main:app --reload --port 8000
 
 Health check: `GET http://localhost:8000/api/health`
 
-Secrets are listed in `backend/.env.example` (copy to `backend/.env`). **`GEMINI_API_KEY`** (or **`GOOGLE_API_KEY`**) is required. Models, concurrency caps, validation limits, overload backoff, and **`CORS_ALLOWED_ORIGINS`** are set in **`backend/app/config.py`** (not environment variables).
+Secrets are listed in `backend/.env.example` (copy to `backend/.env`). **`GEMINI_API_KEY`** (or **`GOOGLE_API_KEY`**) is required. Models, concurrency caps, validation limits, overload backoff, and CORS defaults are set in **`backend/app/config.py`**. On Railway, set **`APP_ENV=staging`** or **`APP_ENV=production`** so CORS matches the paired Cloudflare Workers URL.
 
 ### 2. Frontend
 
@@ -76,13 +76,22 @@ docker compose up -d
 
 4. Logs: `docker compose logs -f`. Stop: `docker compose down`.
 
-For **split deployments** (static UI on one host, API on another), build the frontend with  
-`VITE_API_BASE_URL=https://your-api-host` and add your UI origin to **`CORS_ALLOWED_ORIGINS`** in **`backend/app/config.py`**.
+For **split deployments** (static UI on one host, API on another), build the frontend with the matching env file and set **`APP_ENV`** on the Railway backend service:
+
+| Environment | Frontend build | Cloudflare Workers | Backend (Railway) |
+|-------------|------------------|--------------------|-------------------|
+| **Staging** | `npm run build:staging` | `npm run deploy:staging` → `https://kyc-automation-staging.bhanu-marreddy.workers.dev` | `APP_ENV=staging` on the staging service |
+| **Production** | `npm run build:production` | `npm run deploy:production` → `https://kycautomation.bhanu-marreddy.workers.dev` | `APP_ENV=production` on the production service |
+
+Each build bakes in the correct **`VITE_API_BASE_URL`** (`.env.staging` or `.env.production`). The backend only accepts browser requests from its paired Workers origin (plus local dev ports).
+
+Verify after deploy: `npm run smoke:staging` or `npm run smoke:production`.
 
 ## Other deployment notes
 
-- **Frontend (Cloudflare Workers):** The repo includes `wrangler.jsonc`. Typical commands: `npm run build`, then `npx wrangler deploy`. Set **`VITE_API_BASE_URL`** to your public API URL before building.
-- **Backend:** Host `backend/` on a Python-friendly platform (Railway, Render, Fly.io, Cloud Run, etc.). Update **`CORS_ALLOWED_ORIGINS`** in **`app/config.py`** when the browser hits the API on a different origin than the SPA.
+- **Frontend (Cloudflare Workers):** Two Workers apps — production (`kyc-automation`) and staging (`kyc-automation-staging`). Use `npm run deploy:staging` or `npm run deploy:production`; do not mix builds across environments.
+- **Backend (Railway):** Two services — staging and production — each with its own secrets, Postgres, and S3 bucket. Set **`APP_ENV`** to `staging` or `production` on the matching service so CORS aligns with the Workers URL. Override with **`CORS_ALLOWED_ORIGINS`** if you add custom domains.
+- **Custom domains (Cloudflare):** In the Cloudflare dashboard, attach a domain to each Worker separately (e.g. `staging.example.com` → staging Worker, `app.example.com` → production Worker). Then add those origins to **`CORS_ALLOWED_ORIGINS`** on the matching Railway service.
 
 ## License / project origin
 
