@@ -53,5 +53,20 @@ def test_database_url_unset_without_password(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("DATABASE_PASSWORD", raising=False)
     monkeypatch.delenv("PGPASSWORD", raising=False)
+    monkeypatch.delenv("AWS_ROLE_ARN", raising=False)
+    monkeypatch.delenv("RDS_IAM_AUTH", raising=False)
     settings = get_settings()
     assert settings.database_url is None
+    assert settings.rds_iam_auth is False
+
+
+def test_database_url_iam_auth_without_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_PASSWORD", raising=False)
+    monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::923093694619:role/Vercel/access-apg-erin-house")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    settings = get_settings()
+    assert settings.database_url is not None
+    assert settings.database_url.startswith("postgresql://postgres@")
+    assert "sslmode=require" in settings.database_url
+    assert settings.rds_iam_auth is True

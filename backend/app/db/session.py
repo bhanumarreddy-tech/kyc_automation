@@ -5,7 +5,7 @@ from __future__ import annotations
 import ssl
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -13,8 +13,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.models import Base
+from app.db.rds_iam import RDS_IAM_POOL_RECYCLE_SECONDS, generate_rds_auth_token
 
 _engine: AsyncEngine | None = None
 _async_session_maker: async_sessionmaker[AsyncSession] | None = None
@@ -68,6 +69,19 @@ def _async_database_url(url: str) -> str:
     return u
 
 
+def _register_rds_iam_token_injection(engine: AsyncEngine, settings: Settings) -> None:
+    """Inject a fresh RDS IAM token on each new DB connection (tokens expire ~15 min)."""
+
+    @event.listens_for(engine.sync_engine, "do_connect")
+    def _inject_iam_token(dialect, conn_rec, cargs, cparams) -> None:
+        cparams["password"] = generate_rds_auth_token(
+            host=settings.pg_host,
+            port=settings.pg_port,
+            user=settings.pg_user,
+            region=settings.aws_region,
+        )
+
+
 def db_session_maker() -> async_sessionmaker[AsyncSession] | None:
     """Returns the global async session factory, or ``None`` if the DB is disabled."""
     return _async_session_maker
@@ -115,7 +129,12 @@ async def init_database() -> None:
 
     raw_url = _async_database_url(settings.database_url)
     async_url, connect_args = _asyncpg_safe_url(raw_url)
-    _engine = create_async_engine(async_url, echo=False, connect_args=connect_args)
+    engine_kwargs: dict = {"echo": False, "connect_args": connect_args}
+    if settings.rds_iam_auth:
+        engine_kwargs["pool_recycle"] = RDS_IAM_POOL_RECYCLE_SECONDS
+    _engine = create_async_engine(async_url, **engine_kwargs)
+    if settings.rds_iam_auth:
+        _register_rds_iam_token_injection(_engine, settings)
     _async_session_maker = async_sessionmaker(
         _engine,
         class_=AsyncSession,

@@ -140,6 +140,28 @@ def _postgres_password() -> str:
     )
 
 
+def _postgres_params() -> tuple[str, int, str, str, str]:
+    host = _env_first("PGHOST", "POSTGRES_HOST") or DEFAULT_PG_HOST
+    port_raw = _env_first("PGPORT", "POSTGRES_PORT") or str(DEFAULT_PG_PORT)
+    user = _env_first("PGUSER", "POSTGRES_USER") or DEFAULT_PG_USER
+    database = _env_first("PGDATABASE", "POSTGRES_DATABASE") or DEFAULT_PG_DATABASE
+    sslmode = _env_first("PGSSLMODE") or DEFAULT_PG_SSLMODE
+    try:
+        port = int(port_raw)
+    except ValueError:
+        port = DEFAULT_PG_PORT
+    return host, port, user, database, sslmode
+
+
+def _rds_iam_auth_enabled(*, has_password: bool) -> bool:
+    """Use boto3 IAM tokens when no static password and IAM integration is configured."""
+    if has_password:
+        return False
+    if _env_bool("RDS_IAM_AUTH", False):
+        return True
+    return bool(_env_first("AWS_ROLE_ARN"))
+
+
 def _env_int_clamped(name: str, default: int, *, lo: int, hi: int) -> int:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -161,33 +183,27 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
-def _resolve_database_url() -> str | None:
-    """Resolve Postgres URL: DATABASE_URL, then PG* vars + password, else disabled."""
+def _resolve_database_url() -> tuple[str | None, bool]:
+    """Resolve Postgres URL and whether connections use auto-generated IAM tokens."""
     direct = _env_first("DATABASE_URL", "POSTGRES_URL")
     if direct:
-        return direct
+        return direct, False
 
     password = _postgres_password()
-    if not password:
-        return None
+    iam_auth = _rds_iam_auth_enabled(has_password=bool(password))
+    if not password and not iam_auth:
+        return None, False
 
-    host = _env_first("PGHOST", "POSTGRES_HOST") or DEFAULT_PG_HOST
-    port_raw = _env_first("PGPORT", "POSTGRES_PORT") or str(DEFAULT_PG_PORT)
-    user = _env_first("PGUSER", "POSTGRES_USER") or DEFAULT_PG_USER
-    database = _env_first("PGDATABASE", "POSTGRES_DATABASE") or DEFAULT_PG_DATABASE
-    sslmode = _env_first("PGSSLMODE") or DEFAULT_PG_SSLMODE
-
-    try:
-        port = int(port_raw)
-    except ValueError:
-        port = DEFAULT_PG_PORT
-
+    host, port, user, database, sslmode = _postgres_params()
     user_q = quote_plus(user)
-    pwd_q = quote_plus(password)
-    base = f"postgresql://{user_q}:{pwd_q}@{host}:{port}/{database}"
+    if password:
+        pwd_q = quote_plus(password)
+        base = f"postgresql://{user_q}:{pwd_q}@{host}:{port}/{database}"
+    else:
+        base = f"postgresql://{user_q}@{host}:{port}/{database}"
     if sslmode:
-        return f"{base}?sslmode={sslmode}"
-    return base
+        return f"{base}?sslmode={sslmode}", iam_auth
+    return base, iam_auth
 
 
 @dataclass(frozen=True)
@@ -196,6 +212,12 @@ class Settings:
     gemini_model: str
     gemini_validation_model: str
     database_url: str | None = None
+    rds_iam_auth: bool = False
+    pg_host: str = DEFAULT_PG_HOST
+    pg_port: int = DEFAULT_PG_PORT
+    pg_user: str = DEFAULT_PG_USER
+    pg_database: str = DEFAULT_PG_DATABASE
+    aws_region: str = "us-east-1"
     log_level: str = "INFO"
     cors_origins: list[str] = field(default_factory=list)
     answer_concurrency: int = 1
@@ -245,7 +267,9 @@ def get_settings() -> Settings:
         os.environ.get("GEMINI_API_KEY", "").strip()
         or os.environ.get("GOOGLE_API_KEY", "").strip()
     )
-    database_url = _resolve_database_url()
+    database_url, rds_iam_auth = _resolve_database_url()
+    pg_host, pg_port, pg_user, pg_database, _pg_sslmode = _postgres_params()
+    aws_region = _env_first("AWS_REGION") or "us-east-1"
 
     blob_token = os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip() or None
     blob_store_id = os.environ.get("BLOB_STORE_ID", "").strip() or None
@@ -267,6 +291,12 @@ def get_settings() -> Settings:
         gemini_model=GEMINI_MODEL_ANSWER,
         gemini_validation_model=GEMINI_MODEL_VALIDATION,
         database_url=database_url,
+        rds_iam_auth=rds_iam_auth,
+        pg_host=pg_host,
+        pg_port=pg_port,
+        pg_user=pg_user,
+        pg_database=pg_database,
+        aws_region=aws_region,
         log_level=LOG_LEVEL,
         cors_origins=list(CORS_ALLOWED_ORIGINS),
         answer_concurrency=ANSWER_CONCURRENCY,

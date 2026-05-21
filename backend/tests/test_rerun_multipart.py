@@ -59,6 +59,8 @@ def rerun_client(monkeypatch: pytest.MonkeyPatch):
         "DATABASE_PASSWORD",
         "POSTGRES_PASSWORD",
         "PGPASSWORD",
+        "AWS_ROLE_ARN",
+        "RDS_IAM_AUTH",
     ):
         monkeypatch.delenv(name, raising=False)
     _clear_settings_cache()
