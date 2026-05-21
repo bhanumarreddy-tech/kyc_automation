@@ -114,14 +114,6 @@ ANSWER_SOURCES_DOMAIN_PRIORITY_SUFFIXES: tuple[str, ...] = (
 )
 
 
-# Railway Postgres — non-secret connection defaults (match Railway Postgres plugin outputs).
-# Password comes only from env (DATABASE_PASSWORD / POSTGRES_PASSWORD / PGPASSWORD).
-RAILWAY_PG_USER = "postgres"
-RAILWAY_PG_DATABASE = "railway"
-RAILWAY_PG_PUBLIC_HOST = "yamabiko.proxy.rlwy.net"
-RAILWAY_PG_PUBLIC_PORT = 47180
-RAILWAY_PG_INTERNAL_HOST = "postgres.railway.internal"
-RAILWAY_PG_INTERNAL_PORT = 5432
 
 
 def _running_on_railway() -> bool:
@@ -133,11 +125,74 @@ def _running_on_railway() -> bool:
     )
 
 
+def _env_first(*names: str) -> str:
+    for name in names:
+        val = os.environ.get(name, "").strip()
+        if val:
+            return val
+    return ""
+
+
 def _postgres_password() -> str:
-    return (
-        os.environ.get("DATABASE_PASSWORD", "").strip()
-        or os.environ.get("POSTGRES_PASSWORD", "").strip()
-        or os.environ.get("PGPASSWORD", "").strip()
+    return _env_first("POSTGRES_PASSWORD", "PGPASSWORD", "DATABASE_PASSWORD")
+
+
+def _postgres_db_name() -> str:
+    return _env_first("PGDATABASE", "POSTGRES_DB")
+
+
+def _build_database_url(
+    *,
+    host: str,
+    port: str,
+    user: str,
+    password: str,
+    database: str,
+    sslmode: str | None = None,
+) -> str | None:
+    if not all([host, port, user, password, database]):
+        return None
+    try:
+        port_int = int(port)
+    except ValueError:
+        return None
+    user_q = quote_plus(user)
+    pwd_q = quote_plus(password)
+    suffix = f"?sslmode={sslmode}" if sslmode else ""
+    return f"postgresql://{user_q}:{pwd_q}@{host}:{port_int}/{database}{suffix}"
+
+
+def _ensure_public_ssl(url: str) -> str:
+    if "sslmode=" in url:
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}sslmode=require"
+
+
+def _resolve_database_url() -> str | None:
+    """Resolve Postgres URL from Railway-style env vars (no hardcoded endpoints)."""
+    if _running_on_railway():
+        url = os.environ.get("DATABASE_URL", "").strip()
+        if url:
+            return url
+        return _build_database_url(
+            host=_env_first("PGHOST"),
+            port=_env_first("PGPORT"),
+            user=_env_first("PGUSER"),
+            password=_postgres_password(),
+            database=_postgres_db_name(),
+        )
+
+    url = os.environ.get("DATABASE_PUBLIC_URL", "").strip()
+    if url:
+        return _ensure_public_ssl(url)
+    return _build_database_url(
+        host=_env_first("PGHOST"),
+        port=_env_first("PGPORT"),
+        user=_env_first("PGUSER"),
+        password=_postgres_password(),
+        database=_postgres_db_name(),
+        sslmode="require",
     )
 
 
@@ -160,29 +215,6 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw in ("0", "false", "no", "off"):
         return False
     return default
-
-
-def _resolve_database_url() -> str | None:
-    """Build async Postgres URL from password env vars + hardcoded Railway endpoints."""
-    password = _postgres_password()
-    if not password:
-        return None
-
-    user_q = quote_plus(RAILWAY_PG_USER)
-    pwd_q = quote_plus(password)
-
-    if _running_on_railway():
-        host = RAILWAY_PG_INTERNAL_HOST
-        port = RAILWAY_PG_INTERNAL_PORT
-        suffix = ""
-    else:
-        host = RAILWAY_PG_PUBLIC_HOST
-        port = RAILWAY_PG_PUBLIC_PORT
-        suffix = "?sslmode=require"
-
-    return (
-        f"postgresql://{user_q}:{pwd_q}@{host}:{port}/{RAILWAY_PG_DATABASE}{suffix}"
-    )
 
 
 @dataclass(frozen=True)
