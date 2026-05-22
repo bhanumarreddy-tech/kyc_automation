@@ -204,8 +204,9 @@ async def build_similarity_matrix(
         result = await session.execute(
             select(
                 KYCDocumentChunk.id,
-                KYCDocumentChunk.filename,
+                KYCDocumentChunk.document_id,
                 KYCDocumentChunk.chunk_index,
+                KYCDocumentChunk.chunk_metadata,
                 KYCDocumentChunk.embedding,
             ).where(
                 KYCDocumentChunk.submission_id == submission_id,
@@ -221,7 +222,10 @@ async def build_similarity_matrix(
         row = by_id.get(cid)
         if row is None:
             continue
-        _id, filename, chunk_index, embedding = row
+        _id, document_id, chunk_index, meta, embedding = row
+        filename = document_id
+        if isinstance(meta, dict):
+            filename = str(meta.get("filename") or document_id)
         labels.append(f"{filename or 'doc'} #{chunk_index}")
         chunk_vectors.append([float(v) for v in embedding])
 

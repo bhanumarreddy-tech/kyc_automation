@@ -44,6 +44,19 @@ export interface RagRetrievalPass {
   preMmrCandidates?: RagChunkHit[];
   hits: RagChunkHit[];
   scoreWaterfall?: RagScoreWaterfall | null;
+  stageTiming?: RagStageTiming | null;
+}
+
+export interface RagStageTiming {
+  hybridMs?: number;
+  filterMs?: number;
+  rerankMs?: number;
+  mmrMs?: number;
+  totalMs?: number;
+  primaryRetrieveMs?: number;
+  validationMs?: number;
+  recallRetrieveMs?: number;
+  recallValidationMs?: number;
 }
 
 export interface RagQuestionTrace {
@@ -58,6 +71,7 @@ export interface RagQuestionTrace {
   primaryRetrieval: RagRetrievalPass | null;
   recallRetrieval: RagRetrievalPass | null;
   durationMs: number | null;
+  stageTiming?: RagStageTiming | null;
 }
 
 export interface RagTracePayload {
@@ -128,4 +142,77 @@ export interface RagObservabilityResponse {
   };
   similarityMatrix?: SimilarityMatrix | null;
   activeTechniques?: RagTechnique[];
+  failureCases?: RagFailureCase[];
+}
+
+export interface RagFailureCase {
+  serialNo: number;
+  sectionNo: number;
+  sectionName: string;
+  question: string;
+  answerPreview: string;
+  validationPath: string;
+  validation: string;
+  tags: string[];
+  reasons: string[];
+  hitCount: number;
+  durationMs: number | null;
+}
+
+export interface RagFilterSandboxResult {
+  serialNo: number;
+  recall: boolean;
+  minDenseScore: number;
+  minLexicalScore: number;
+  minFusedScore: number;
+  totalCandidates: number;
+  survivorCount: number;
+  rejectedCount: number;
+  candidates: Array<RagChunkHit & { wouldPass?: boolean }>;
+}
+
+export interface RagStrategyCompareResult {
+  serialNo: number;
+  query: string;
+  expandedQueries: string[];
+  strategies: Record<
+    string,
+    {
+      label: string;
+      description: string;
+      hitCount: number;
+      hits: RagChunkHit[];
+      durationMs: number;
+    }
+  >;
+  diff: {
+    sharedChunkIds: string[];
+    uniqueByStrategy: Record<string, string[]>;
+    allChunkIds: string[];
+  };
+}
+
+export interface ChunkBoundaryChunk {
+  chunkId: string;
+  chunkIndex: number;
+  filename: string;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  charLength: number;
+  contentPreview: string;
+  smallDoc?: boolean;
+  overlapWithNext: number;
+  boundaryIssues: string[];
+}
+
+export interface ChunkBoundariesResponse {
+  submissionId: string;
+  config: { overlapChars: number };
+  documents: Array<{
+    documentId: string;
+    filename: string;
+    chunkCount: number;
+    chunks: ChunkBoundaryChunk[];
+  }>;
+  totalChunks: number;
 }

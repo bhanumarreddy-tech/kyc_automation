@@ -142,6 +142,7 @@ class RagTraceCollector:
             "primaryRetrieval": None,
             "recallRetrieval": None,
             "durationMs": None,
+            "stageTiming": None,
         }
         self._question_index[serial_no] = row
         self.questions.append(row)
@@ -182,6 +183,7 @@ class RagTraceCollector:
         validation: str,
         retrieval_used: bool,
         duration_ms: int,
+        stage_timing: dict[str, Any] | None = None,
     ) -> None:
         row = self._ensure_question(
             serial_no=serial_no,
@@ -194,6 +196,8 @@ class RagTraceCollector:
         row["validation"] = validation
         row["retrievalUsed"] = retrieval_used
         row["durationMs"] = duration_ms
+        if stage_timing is not None:
+            row["stageTiming"] = stage_timing
 
     def to_dict(self) -> dict[str, Any]:
         validate_ms: int | None = None
@@ -232,6 +236,7 @@ def build_retrieval_trace(
     techniques: list[str] | None = None,
     rerank_method: str | None = None,
     filter_rejected: dict[str, str] | None = None,
+    stage_timing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Serialize one retrieval pass for observability."""
     reranked_with_rank = [
@@ -284,4 +289,5 @@ def build_retrieval_trace(
         "preMmrCandidates": pre_mmr_preview,
         "hits": reranked_with_rank,
         "scoreWaterfall": score_waterfall,
+        "stageTiming": stage_timing,
     }

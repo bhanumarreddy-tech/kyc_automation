@@ -54,12 +54,18 @@ import type {
 } from "@/types/ragObservability";
 import {
   FilterDiagnostics,
-  LearningIdeasCard,
   PipelineFlowCard,
   ScoreWaterfallChart,
   SimilarityHeatmap,
   TechniquesGuide,
 } from "./RagExplorerAdvanced";
+import {
+  ChunkBoundaryViewer,
+  FailureCaseGallery,
+  LatencyFlameChart,
+  StrategyComparePanel,
+  ThresholdSandbox,
+} from "./RagExplorerFeatures";
 
 interface RagObservabilityPanelProps {
   submissionId: string | null | undefined;
@@ -509,6 +515,7 @@ export function RagObservabilityPanel({
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<RagObservabilityResponse | null>(null);
   const [selectedSerial, setSelectedSerial] = useState<string>("");
+  const [activeTab, setActiveTab] = useState("overview");
 
   useEffect(() => {
     if (!open || !submissionId) return;
@@ -580,6 +587,16 @@ export function RagObservabilityPanel({
     return ids;
   }, [selectedQuestion]);
 
+  const selectedSerialNo = useMemo(() => {
+    const n = Number(selectedSerial);
+    return Number.isFinite(n) ? n : null;
+  }, [selectedSerial]);
+
+  const jumpToQuestion = (serialNo: number) => {
+    setSelectedSerial(String(serialNo));
+    setActiveTab("retrieval");
+  };
+
   const selectedPass = useMemo(() => {
     if (!selectedQuestion) return null;
     return selectedQuestion.primaryRetrieval ?? selectedQuestion.recallRetrieval;
@@ -618,7 +635,7 @@ export function RagObservabilityPanel({
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : data ? (
-          <Tabs defaultValue="overview" className="mt-4">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="mt-4">
             <TabsList className="grid w-full grid-cols-2 sm:grid-cols-5 h-auto">
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
@@ -627,22 +644,49 @@ export function RagObservabilityPanel({
               <TabsTrigger value="learn">Learn</TabsTrigger>
             </TabsList>
 
-            <TabsContent value="overview" className="mt-4">
+            <TabsContent value="overview" className="mt-4 space-y-4">
               <OverviewTab data={data} />
+              <FailureCaseGallery
+                cases={data.failureCases ?? []}
+                onSelectQuestion={jumpToQuestion}
+              />
+              <LatencyFlameChart trace={data.trace} />
             </TabsContent>
 
             <TabsContent value="pipeline" className="mt-4 space-y-4">
+              {data.trace?.questions?.length ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select value={selectedSerial} onValueChange={setSelectedSerial}>
+                    <SelectTrigger className="w-[240px]">
+                      <SelectValue placeholder="Question for sandbox" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {data.trace.questions.map((q) => (
+                        <SelectItem key={q.serialNo} value={String(q.serialNo)}>
+                          Q{q.serialNo} · {q.sectionName}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+              <ThresholdSandbox
+                submissionId={submissionId}
+                pass={selectedPass}
+                serialNo={selectedSerialNo}
+              />
               <PipelineFlowCard pass={selectedPass} />
               <ScoreWaterfallChart pass={selectedPass} />
               <SimilarityHeatmap matrix={data.similarityMatrix} />
             </TabsContent>
 
-            <TabsContent value="embeddings" className="mt-4">
+            <TabsContent value="embeddings" className="mt-4 space-y-4">
               <EmbeddingMap
                 data={data.embeddingMap}
                 selectedQuestion={selectedQuestion}
                 highlightChunkIds={highlightChunkIds}
               />
+              <ChunkBoundaryViewer submissionId={submissionId} />
             </TabsContent>
 
             <TabsContent value="retrieval" className="mt-4 space-y-4">
@@ -664,6 +708,10 @@ export function RagObservabilityPanel({
                       </SelectContent>
                     </Select>
                   </div>
+                  <StrategyComparePanel
+                    submissionId={submissionId}
+                    serialNo={selectedSerialNo}
+                  />
                   {selectedQuestion ? (
                     <QuestionRetrievalDetail question={selectedQuestion} />
                   ) : null}
@@ -682,7 +730,6 @@ export function RagObservabilityPanel({
 
             <TabsContent value="learn" className="mt-4 space-y-4">
               <TechniquesGuide techniques={data.activeTechniques ?? []} />
-              <LearningIdeasCard />
             </TabsContent>
           </Tabs>
         ) : null}

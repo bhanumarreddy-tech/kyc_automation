@@ -721,6 +721,7 @@ async def validate_question(
     recall_docs_for_url_index: list[ParsedDocument] = []
     validation_path = "unknown"
     recall_used = False
+    stage_timing: dict[str, int] = {}
 
     use_rag = submission_id is not None and rag_indexing_available(settings)
     indexed = 0
@@ -732,6 +733,7 @@ async def validate_question(
         and indexed > 0
         and not should_use_full_corpus_fallback(indexed, corpus_chars, settings)
     ):
+        t_retrieve = time.perf_counter()
         hits = await retrieve_for_question(
             submission_id,
             question,
@@ -739,6 +741,7 @@ async def validate_question(
             settings,
             recall=False,
         )
+        stage_timing["primaryRetrieveMs"] = int((time.perf_counter() - t_retrieve) * 1000)
         if hits:
             retrieved_docs = chunks_to_parsed_documents(
                 hits,
@@ -773,6 +776,7 @@ async def validate_question(
     questions = [question]
     answers = [answer]
 
+    t_validate = time.perf_counter()
     shard_results: list[list[ValidationResult]] = [
         await _invoke_validation_gemini_once(
             client=client,
@@ -788,16 +792,21 @@ async def validate_question(
             max_preview_chars=settings.validation_max_text_preview_chars,
         )
     ]
+    stage_timing["validationMs"] = int((time.perf_counter() - t_validate) * 1000)
 
     if retrieval_used and not _globally_has_yes(shard_results[0]):
         recall_prepared: list[ParsedDocument] | None = None
         if use_rag and submission_id is not None and indexed > 0:
+            t_recall_retrieve = time.perf_counter()
             recall_hits = await retrieve_for_question(
                 submission_id,
                 question,
                 answer,
                 settings,
                 recall=True,
+            )
+            stage_timing["recallRetrieveMs"] = int(
+                (time.perf_counter() - t_recall_retrieve) * 1000
             )
             if recall_hits:
                 recall_prepared = natives + chunks_to_parsed_documents(
@@ -815,6 +824,7 @@ async def validate_question(
 
         if recall_prepared:
             recall_known = {d.filename for d in recall_prepared}
+            t_recall_validate = time.perf_counter()
             shard_results.append(
                 await _invoke_validation_gemini_once(
                     client=client,
@@ -829,6 +839,9 @@ async def validate_question(
                     max_total_chars=settings.validation_max_total_text_chars,
                     max_preview_chars=settings.validation_max_text_preview_chars,
                 )
+            )
+            stage_timing["recallValidationMs"] = int(
+                (time.perf_counter() - t_recall_validate) * 1000
             )
             recall_docs_for_url_index = recall_prepared
             recall_used = True
@@ -852,6 +865,7 @@ async def validate_question(
             validation=result.validation,
             retrieval_used=retrieval_used,
             duration_ms=int((time.perf_counter() - started) * 1000),
+            stage_timing=stage_timing or None,
         )
 
     logger.info(

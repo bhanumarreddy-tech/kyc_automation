@@ -36,17 +36,19 @@ Configuration details: [`app/config.py`](app/config.py) and [`.env.example`](.en
 
 ## RAG observability
 
-The validation RAG pipeline uses **state-of-the-art retrieval techniques** and records traces in Postgres (`rag_trace`):
+The validation RAG pipeline uses **state-of-the-art retrieval techniques** and records traces in Postgres (`rag_trace`).
 
-| Technique | Purpose |
-|-----------|---------|
-| Contextual retrieval | Prepends document context before embedding |
-| Hybrid dense + lexical | pgvector cosine + Postgres `ts_rank` |
-| Reciprocal Rank Fusion | Merges ranked lists without score calibration |
-| Multi-query retrieval | Question + keyword query variants fused with RRF |
-| Gemini listwise rerank | Cross-encoder-style reranking of top candidates |
-| MMR diversity | Reduces redundant chunks from the same passage |
+After a run, open **RAG explorer** on the results screen. Tabs include:
 
-After a run, open **RAG explorer** on the results screen. Tabs include pipeline flow, score waterfall, embedding PCA map, similarity heatmap, and per-question retrieval diagnostics.
+- **Overview** — stats, failure case gallery, latency flame chart
+- **Pipeline** — interactive threshold sandbox, pipeline flow, score waterfall, similarity heatmap
+- **Embeddings** — PCA map + chunk boundary viewer (overlap, page markers, split diagnostics)
+- **Retrieval** — side-by-side strategy compare (dense vs hybrid vs hybrid+rerank), per-question traces
+- **Learn** — active technique guide
 
-API: `GET /api/history/{submissionId}/rag-observability?serialNo=1`
+API endpoints:
+
+- `GET /api/history/{submissionId}/rag-observability`
+- `GET /api/history/{submissionId}/rag-filter-sandbox?serialNo=1&minDense=0.42`
+- `GET /api/history/{submissionId}/rag-compare?serialNo=1`
+- `GET /api/history/{submissionId}/chunk-boundaries`

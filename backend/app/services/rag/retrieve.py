@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import text
 
@@ -153,6 +154,65 @@ async def _hybrid_retrieve(
     return fused[:top_k], query_vec
 
 
+async def _dense_retrieve_only(
+    submission_id: uuid.UUID,
+    query: str,
+    settings: Settings,
+    *,
+    top_k: int,
+) -> tuple[list[RetrievedChunk], list[float]]:
+    """Dense vector search only (no lexical branch or RRF)."""
+    maker = db_session_maker()
+    if maker is None:
+        return [], []
+
+    query_vec = await embed_query(query, settings)
+    vec_literal = "[" + ",".join(str(v) for v in query_vec) + "]"
+
+    dense_sql = text(
+        """
+        SELECT id, document_id, chunk_index, content, page_start, page_end,
+               metadata, 1 - (embedding <=> CAST(:qv AS vector)) AS dense_score
+        FROM kyc_document_chunks
+        WHERE submission_id = :sid
+        ORDER BY embedding <=> CAST(:qv AS vector)
+        LIMIT :lim
+        """
+    )
+
+    async with maker() as session:
+        dense_rows = (
+            await session.execute(
+                dense_sql,
+                {"sid": submission_id, "qv": vec_literal, "lim": top_k},
+            )
+        ).mappings().all()
+
+    out: list[RetrievedChunk] = []
+    for row in dense_rows:
+        meta = row.get("metadata") or {}
+        if isinstance(meta, str):
+            meta = {}
+        filename = str(meta.get("filename") or row["document_id"])
+        dense = float(row.get("dense_score") or 0.0)
+        out.append(
+            RetrievedChunk(
+                chunk_id=row["id"],
+                document_id=str(row["document_id"]),
+                chunk_index=int(row["chunk_index"]),
+                content=str(row["content"]),
+                page_start=row.get("page_start"),
+                page_end=row.get("page_end"),
+                filename=filename,
+                dense_score=dense,
+                lexical_score=0.0,
+                fused_score=dense,
+                rerank_score=dense,
+            )
+        )
+    return out, query_vec
+
+
 def _filter_by_relevance(
     chunks: list[RetrievedChunk],
     *,
@@ -231,6 +291,100 @@ async def _hybrid_retrieve_multi(
     return merged[:top_k], query_vecs[0] if query_vecs else []
 
 
+RetrievalStrategy = Literal["dense", "hybrid", "hybrid_rerank"]
+
+
+async def compare_retrieval_strategies(
+    submission_id: uuid.UUID,
+    query: str,
+    settings: Settings,
+    *,
+    retrieve_top_k: int | None = None,
+    rerank_top_k: int | None = None,
+    question_text: str | None = None,
+) -> dict[str, Any]:
+    """Run dense-only, hybrid, and full hybrid+rerank for side-by-side comparison."""
+    from app.services.rag.explorer_helpers import diff_hit_lists, hits_to_compare_rows
+    from app.services.rag.query_expansion import expand_retrieval_queries
+    from app.services.rag.rerank import gemini_rerank
+
+    top_k = retrieve_top_k or settings.rag_retrieve_top_k
+    rerank_k = rerank_top_k or settings.rag_rerank_top_k
+    min_fused = settings.rag_min_relevance_score
+    min_dense = settings.rag_min_dense_score
+    min_lexical = settings.rag_min_lexical_score
+
+    expanded = expand_retrieval_queries(
+        query,
+        question_text=question_text,
+        enabled=settings.rag_multi_query_enabled,
+    )
+
+    t0 = time.perf_counter()
+    dense_hits, _ = await _dense_retrieve_only(submission_id, query, settings, top_k=top_k)
+    dense_ms = int((time.perf_counter() - t0) * 1000)
+
+    t1 = time.perf_counter()
+    hybrid_candidates, _ = await _hybrid_retrieve_multi(
+        submission_id, expanded, settings, top_k=top_k
+    )
+    filtered, _ = _filter_by_relevance(
+        hybrid_candidates,
+        min_dense=min_dense,
+        min_lexical=min_lexical,
+        min_fused=min_fused,
+    )
+    hybrid_hits = filtered[:rerank_k]
+    hybrid_ms = int((time.perf_counter() - t1) * 1000)
+
+    t2 = time.perf_counter()
+    full_hits = await retrieve_for_query(
+        submission_id,
+        query,
+        settings,
+        retrieve_top_k=top_k,
+        rerank_top_k=rerank_k,
+    )
+    full_ms = int((time.perf_counter() - t2) * 1000)
+
+    dense_rows = hits_to_compare_rows(dense_hits)
+    hybrid_rows = hits_to_compare_rows(hybrid_hits)
+    full_rows = hits_to_compare_rows(full_hits)
+
+    return {
+        "query": query[:2000],
+        "expandedQueries": expanded,
+        "strategies": {
+            "dense": {
+                "label": "Dense only",
+                "description": "pgvector cosine similarity, no lexical or rerank.",
+                "hitCount": len(dense_rows),
+                "hits": dense_rows,
+                "durationMs": dense_ms,
+            },
+            "hybrid": {
+                "label": "Hybrid + filter",
+                "description": "Dense + lexical RRF fusion with relevance filter, no rerank.",
+                "hitCount": len(hybrid_rows),
+                "hits": hybrid_rows,
+                "durationMs": hybrid_ms,
+            },
+            "hybridRerank": {
+                "label": "Hybrid + rerank",
+                "description": "Full pipeline: multi-query hybrid, filter, Gemini rerank, MMR.",
+                "hitCount": len(full_rows),
+                "hits": full_rows,
+                "durationMs": full_ms,
+            },
+        },
+        "diff": diff_hit_lists(
+            ("dense", dense_rows),
+            ("hybrid", hybrid_rows),
+            ("hybridRerank", full_rows),
+        ),
+    }
+
+
 async def retrieve_for_query(
     submission_id: uuid.UUID,
     query: str,
@@ -271,27 +425,35 @@ async def retrieve_for_query(
         enabled=settings.rag_multi_query_enabled,
     )
 
+    t_hybrid = time.perf_counter()
     hybrid_candidates, query_embedding = await _hybrid_retrieve_multi(
         submission_id, expanded, settings, top_k=top_k
     )
+    hybrid_ms = int((time.perf_counter() - t_hybrid) * 1000)
+
+    t_filter = time.perf_counter()
     filtered_candidates, filter_rejected = _filter_by_relevance(
         hybrid_candidates,
         min_dense=min_dense,
         min_lexical=min_lexical,
         min_fused=min_fused,
     )
+    filter_ms = int((time.perf_counter() - t_filter) * 1000)
 
     from app.services.rag.rerank import gemini_rerank
 
+    t_rerank = time.perf_counter()
     reranked, rerank_method = await gemini_rerank(
         query,
         filtered_candidates,
         settings,
         top_k=min(len(filtered_candidates), settings.rag_gemini_rerank_candidates),
     )
+    rerank_ms = int((time.perf_counter() - t_rerank) * 1000)
 
     from app.services.rag.diversity import mmr_select
 
+    t_mmr = time.perf_counter()
     if settings.rag_mmr_enabled and len(reranked) > rerank_k:
         hits = mmr_select(
             reranked,
@@ -300,6 +462,15 @@ async def retrieve_for_query(
         )
     else:
         hits = reranked[:rerank_k]
+    mmr_ms = int((time.perf_counter() - t_mmr) * 1000)
+
+    stage_timing = {
+        "hybridMs": hybrid_ms,
+        "filterMs": filter_ms,
+        "rerankMs": rerank_ms,
+        "mmrMs": mmr_ms,
+        "totalMs": hybrid_ms + filter_ms + rerank_ms + mmr_ms,
+    }
 
     techniques = [
         "contextual_retrieval",
@@ -338,6 +509,7 @@ async def retrieve_for_query(
                 techniques=techniques,
                 rerank_method=rerank_method,
                 filter_rejected=filter_rejected,
+                stage_timing=stage_timing,
             )
             collector.record_retrieval(
                 serial_no=int(question_ctx["serialNo"]),
